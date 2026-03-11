@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CooCom Agentic Chat</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="top-shell">
+        <header class="topbar">
+          <div class="topbar-head">
+            <div class="topbar-title">
+              <h1>CooCom Decision Room</h1>
+              <p class="topbar-subtitle">4 cooperative agents vs 4 competitive agents</p>
+            </div>
+            <div class="topbar-actions">
+              <div class="topbar-button-row">
+                <button
+                  id="judgeToggle"
+                  class="judge-toggle icon-only"
+                  type="button"
+                  aria-controls="judgePanel"
+                  aria-expanded="false"
+                  aria-label="Show scoreboard"
+                  title="Show scoreboard"
+                >
+                  <svg class="judge-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <rect x="3" y="3" width="7" height="7" rx="1"></rect>
+                    <rect x="14" y="3" width="7" height="7" rx="1"></rect>
+                    <rect x="3" y="14" width="7" height="7" rx="1"></rect>
+                    <rect x="14" y="14" width="7" height="7" rx="1"></rect>
+                  </svg>
+                </button>
+                <button id="startBtn">Start Discussion</button>
+              </div>
+              <div id="timer">00:30</div>
+            </div>
+          </div>
+        </header>
+
+        <section class="controls">
+          <label for="topic">Your Question / Topic</label>
+          <textarea id="topic" rows="3" placeholder="Example: Should I build this as a mobile app or a web app first?"></textarea>
+          <p id="status" class="status">Idle</p>
+        </section>
+      </section>
+
+      <section class="panes">
+        <article class="pane cooperative">
+          <div class="pane-head">
+            <h2>Cooperative</h2>
+            <p>Builds aligned solutions and practical synthesis.</p>
+          </div>
+          <div id="coopLog" class="log"></div>
+        </article>
+        <article class="pane competitive">
+          <div class="pane-head">
+            <h2>Competitive</h2>
+            <p>Challenges assumptions and pressure-tests ideas.</p>
+          </div>
+          <div id="compLog" class="log"></div>
+        </article>
+      </section>
+
+      <section class="conclusions-bar">
+        <article class="conclusion-card cooperative">
+          <h3>Cooperative Conclusion</h3>
+          <pre id="coopConclusion" class="conclusion"></pre>
+        </article>
+        <article class="conclusion-card competitive">
+          <h3>Competitive Conclusion</h3>
+          <pre id="compConclusion" class="conclusion"></pre>
+        </article>
+      </section>
+    </main>
+
+    <div id="judgeBackdrop" class="judge-backdrop is-hidden" aria-hidden="true"></div>
+
+    <aside id="judgePanel" class="judge-sidepanel is-collapsed" aria-hidden="true" aria-live="polite">
+      <div class="judge-panel-top">
+        <div class="judge-head">
+          <h3>Round Scoreboard</h3>
+          <p id="judgeTally" class="judge-tally">Session: Cooperative 0 | Competitive 0 | Ties 0</p>
+        </div>
+        <button id="clearHistoryBtn" class="judge-clear-btn" type="button">Clear History</button>
+      </div>
+      <div class="judge-grid">
+        <div class="judge-row">
+          <span class="judge-label cooperative">Cooperative</span>
+          <span id="scoreCoop" class="judge-score">C - | P - | U - | O -</span>
+        </div>
+        <div class="judge-row">
+          <span class="judge-label competitive">Competitive</span>
+          <span id="scoreComp" class="judge-score">C - | P - | U - | O -</span>
+        </div>
+      </div>
+      <p id="judgeWinner" class="judge-winner">Winner: Pending</p>
+      <p id="judgeRationale" class="judge-rationale">Scoring will appear after both final conclusions.</p>
+
+      <section class="judge-history">
+        <h4>Saved Rounds</h4>
+        <div id="judgeHistory" class="judge-history-list">
+          <p class="history-empty">No rounds scored yet.</p>
+        </div>
+      </section>
+    </aside>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
