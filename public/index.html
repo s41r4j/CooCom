@@ -33,6 +33,20 @@
                     <rect x="14" y="14" width="7" height="7" rx="1"></rect>
                   </svg>
                 </button>
+                <button
+                  id="csvToggle"
+                  class="judge-toggle icon-only"
+                  type="button"
+                  aria-controls="csvPanel"
+                  aria-expanded="false"
+                  aria-label="Open CSV test runner"
+                  title="Open CSV test runner"
+                >
+                  <svg class="judge-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M12 5v14"></path>
+                    <path d="M5 12h14"></path>
+                  </svg>
+                </button>
                 <button id="startBtn">Start Discussion</button>
               </div>
               <div id="timer">00:30</div>
@@ -77,6 +91,7 @@
     </main>
 
     <div id="judgeBackdrop" class="judge-backdrop is-hidden" aria-hidden="true"></div>
+    <div id="csvBackdrop" class="judge-backdrop is-hidden" aria-hidden="true"></div>
 
     <aside id="judgePanel" class="judge-sidepanel is-collapsed" aria-hidden="true" aria-live="polite">
       <div class="judge-panel-top">
@@ -89,11 +104,11 @@
       <div class="judge-grid">
         <div class="judge-row">
           <span class="judge-label cooperative">Cooperative</span>
-          <span id="scoreCoop" class="judge-score">C - | P - | U - | O -</span>
+          <span id="scoreCoop" class="judge-score">C - | P - | U - | R - | O -</span>
         </div>
         <div class="judge-row">
           <span class="judge-label competitive">Competitive</span>
-          <span id="scoreComp" class="judge-score">C - | P - | U - | O -</span>
+          <span id="scoreComp" class="judge-score">C - | P - | U - | R - | O -</span>
         </div>
       </div>
       <p id="judgeWinner" class="judge-winner">Winner: Pending</p>
@@ -105,6 +120,26 @@
           <p class="history-empty">No rounds scored yet.</p>
         </div>
       </section>
+    </aside>
+
+    <aside id="csvPanel" class="csv-panel is-collapsed" aria-hidden="true" aria-live="polite">
+      <div class="csv-panel-top">
+        <div class="csv-head">
+          <h3>CSV Test Runner</h3>
+          <p class="csv-subtitle">Paste CSV with columns: id,question</p>
+        </div>
+        <button id="csvCloseBtn" class="judge-clear-btn" type="button">Close</button>
+      </div>
+      <textarea
+        id="csvInput"
+        class="csv-input"
+        rows="11"
+        placeholder='id,question&#10;1,"Should I build a web app first?"&#10;2,"Is remote-first better than hybrid?"'
+      ></textarea>
+      <p id="csvHint" class="csv-hint">Each row runs one full 30-second round and appends to saved scoreboard history.</p>
+      <div class="csv-actions">
+        <button id="csvRunBtn" class="csv-run-btn" type="button">Run CSV Tests</button>
+      </div>
     </aside>
 
     <script src="/app.js" type="module"></script>

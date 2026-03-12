@@ -64,6 +64,79 @@ function recentTranscript(transcript = [], maxItems = 16) {
   return transcript.slice(-maxItems);
 }
 
+function normalizePointFingerprint(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function summarizeCoveredPoints(transcript = [], maxItems = 6) {
+  const seen = new Set();
+  const points = [];
+
+  for (let i = transcript.length - 1; i >= 0 && points.length < maxItems; i -= 1) {
+    const item = transcript[i];
+    const content = String(item?.content || "").trim();
+    if (!content) continue;
+
+    const fingerprint = normalizePointFingerprint(content).slice(0, 120);
+    if (!fingerprint || seen.has(fingerprint)) continue;
+    seen.add(fingerprint);
+
+    const speaker = String(item?.name || item?.role || "speaker").trim();
+    points.push(`${speaker}: ${content}`);
+  }
+
+  return points.reverse();
+}
+
+function sanitizePhraseList(agentPhrases = [], maxItems = 3) {
+  if (!Array.isArray(agentPhrases)) return [];
+  return agentPhrases
+    .map(item => String(item || "").trim())
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
+function buildTeamRosterText(teamRoster = [], currentAgent = "", currentLens = "") {
+  if (!Array.isArray(teamRoster) || teamRoster.length === 0) {
+    return currentAgent && currentLens ? `${currentAgent} - ${currentLens}` : "(Roster unavailable)";
+  }
+
+  const clean = teamRoster
+    .map(member => {
+      const name = String(member?.name || "").trim();
+      const lens = String(member?.lens || "").trim();
+      if (!name && !lens) return "";
+      if (!name) return lens;
+      if (!lens) return name;
+      return `${name} - ${lens}`;
+    })
+    .filter(Boolean)
+    .slice(0, 8);
+
+  return clean.join(", ") || "(Roster unavailable)";
+}
+
+function inferDiscussionPhase(turnIndex, wrapUp) {
+  if (wrapUp) return "late";
+  const turn = Number(turnIndex);
+  if (!Number.isFinite(turn) || turn <= 1) return "early";
+  if (turn <= 5) return "middle";
+  return "late";
+}
+
+function phaseDirective(phase) {
+  return [
+    `Discussion phase: ${phase}`,
+    "  early  -> introduce your angle, be exploratory, stake a position",
+    "  middle -> pressure-test what's been said, demand evidence or trade-offs",
+    "  late   -> lock in your single most defensible claim"
+  ].join("\n");
+}
+
 function clampScore(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 0;
@@ -76,12 +149,19 @@ function normalizeScoreBlock(block) {
     clarity: clampScore(block?.clarity),
     practicality: clampScore(block?.practicality),
     usefulness: clampScore(block?.usefulness),
+    rigor: clampScore(block?.rigor),
     overall: clampScore(block?.overall)
   };
 }
 
 function normalizeWinner(value) {
   const token = String(value || "").trim().toLowerCase();
+  if (token === "answer1" || token === "answer 1" || token === "1") {
+    return "cooperative";
+  }
+  if (token === "answer2" || token === "answer 2" || token === "2") {
+    return "competitive";
+  }
   if (token === "cooperative" || token === "competitive" || token === "tie") {
     return token;
   }
@@ -94,6 +174,7 @@ function areScoresExactlyEqual(scores) {
   return (
     coop.overall === comp.overall &&
     coop.practicality === comp.practicality &&
+    coop.rigor === comp.rigor &&
     coop.usefulness === comp.usefulness &&
     coop.clarity === comp.clarity
   );
@@ -105,6 +186,7 @@ function decideWinnerFromScores(scores) {
   const comparisons = [
     ["overall", 1],
     ["practicality", 1],
+    ["rigor", 1],
     ["usefulness", 1],
     ["clarity", 1]
   ];
@@ -119,10 +201,18 @@ function decideWinnerFromScores(scores) {
   return "tie";
 }
 
-function buildJudgePrompt(topic, cooperativeConclusion, competitiveConclusion) {
+function buildJudgePrompt({
+  topic,
+  cooperativeConclusion,
+  competitiveConclusion,
+  cooperativeTranscript = [],
+  competitiveTranscript = []
+}) {
   const question = String(topic || "").trim();
   const answer1 = String(cooperativeConclusion || "").trim();
   const answer2 = String(competitiveConclusion || "").trim();
+  const coopDiscussion = transcriptToText(recentTranscript(cooperativeTranscript, 24));
+  const compDiscussion = transcriptToText(recentTranscript(competitiveTranscript, 24));
 
   return `which answer you like most for question \`${question}\`:
 
@@ -135,6 +225,16 @@ ${answer1}
 2:
 \`\`\`
 ${answer2}
+\`\`\`
+
+cooperative discussion evidence:
+\`\`\`
+${coopDiscussion || "(No cooperative transcript provided)"}
+\`\`\`
+
+competitive discussion evidence:
+\`\`\`
+${compDiscussion || "(No competitive transcript provided)"}
 \`\`\``;
 }
 
@@ -165,9 +265,11 @@ function parseJudgeJson(rawText) {
 }
 
 function normalizeJudgeResult(parsed) {
+  const coopRaw = parsed?.scores?.cooperative || parsed?.scores?.answer1 || parsed?.scores?.one;
+  const compRaw = parsed?.scores?.competitive || parsed?.scores?.answer2 || parsed?.scores?.two;
   const scores = {
-    cooperative: normalizeScoreBlock(parsed?.scores?.cooperative),
-    competitive: normalizeScoreBlock(parsed?.scores?.competitive)
+    cooperative: normalizeScoreBlock(coopRaw),
+    competitive: normalizeScoreBlock(compRaw)
   };
 
   let winner = normalizeWinner(parsed?.winner);
@@ -279,6 +381,8 @@ const server = http.createServer(async (req, res) => {
         agentMission = "",
         agentStyle = "",
         agentPersonality = "",
+        agentPhrases = [],
+        teamRoster = [],
         transcript = [],
         wrapUp = false,
         turnIndex = 0
@@ -292,41 +396,75 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      const phase = inferDiscussionPhase(turnIndex, wrapUp);
+      const rosterText = buildTeamRosterText(teamRoster, agent, agentRole);
+      const phraseList = sanitizePhraseList(agentPhrases, 3);
+      const modeDirective =
+        mode === "cooperative"
+          ? [
+              "Your job: make the collective answer more complete with every turn.",
+              "Find the gap nobody has filled yet - a missing constraint, an unaddressed risk, an unmeasured outcome - and fill it from your lens.",
+              "Do not restate, rephrase, or validate what teammates already said.",
+              "Redirect and extend. Never hard-contradict unless correcting a clear factual error."
+            ].join("\n")
+          : [
+              "Your job: expose weak reasoning before it hardens into consensus.",
+              "Each turn, find exactly ONE of:",
+              "  - An assumption stated as fact that hasn't been tested",
+              "  - A risk named but not quantified or mitigated",
+              "  - An alternative approach the group is ignoring",
+              "  - A logical gap between a claim and its evidence",
+              "Do not just disagree - replace weak reasoning with stronger reasoning.",
+              "Slowing down bad convergence IS your contribution.",
+              "Challenge with specificity. Vague pushback is worthless."
+            ].join("\n");
+
       const systemPrompt = [
         `You are ${agent}, one of 4 agents in a ${mode} discussion.`,
         `Your unique lens is: ${agentRole}.`,
         agentMission ? `Your mission: ${agentMission}` : "",
         agentStyle ? `Your speaking style: ${agentStyle}` : "",
         agentPersonality ? `Your personality vibe: ${agentPersonality}` : "",
-        mode === "cooperative"
-          ? "Be collaborative, build on prior ideas, and avoid unnecessary disagreement."
-          : "Be competitive: challenge weak ideas, propose better alternatives, and defend your position.",
+        `Your team roster: ${rosterText}`,
+        "Stay in your lane. Own your lens. Let teammates own theirs.",
+        modeDirective,
+        phaseDirective(phase),
         wrapUp
-          ? "Moderator alert: final seconds remaining. Give concise, high-value points to help final conclusion."
-          : "Discussion is ongoing. Give one clear point that moves the conversation forward.",
-        "Do not repeat existing points. If something is already covered, contribute a new trade-off, risk, metric, or action step.",
-        "Briefly anchor to one prior idea, then advance it from your unique lens.",
-        "Sound like a real teammate with a clear personal voice, not a generic assistant.",
-        "Keep response under 85 words. No bullets. No roleplay markup."
+          ? "Discussion closing. One crisp, non-negotiable claim the conclusion must carry forward."
+          : "One clear net-new point. Move the conversation forward, not sideways.",
+        phraseList.length > 0
+          ? `Voice anchors (weave in at most one naturally): ${phraseList.map(p => `"${p}"`).join(", ")}.`
+          : "",
+        "Hard rules:",
+        "- Under 85 words.",
+        "- No bullets.",
+        "- No roleplay markup.",
+        "- If a point is already covered, your only option is to deepen or challenge it - never restate it.",
+        "- Anchor briefly to one prior idea, then advance it from your unique lens."
       ]
         .filter(Boolean)
-        .join(" ");
+        .join("\n");
 
       const trimmedTranscript = recentTranscript(transcript, 18);
+      const coveredPoints = summarizeCoveredPoints(trimmedTranscript, 6);
 
       const userPrompt = [
         `Topic: ${topic}`,
         `Turn number: ${Number(turnIndex) + 1}`,
+        "Points already covered (deepen or challenge instead of restating):",
+        coveredPoints.map((point, idx) => `${idx + 1}. ${point}`).join("\n") || "(None yet)",
         "Recent transcript:",
         transcriptToText(trimmedTranscript) || "(No prior messages yet)",
         `Now respond as ${agent}.`
       ].join("\n\n");
 
+      const turnTemperature = mode === "competitive" ? 0.85 : 0.72;
+
       const text = await callOpenAI({
         systemPrompt,
         userPrompt,
         maxOutputTokens: 150,
-        temperature: 0.8
+        temperature: turnTemperature
       });
 
       sendJson(res, 200, { text });
@@ -340,11 +478,36 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const systemPrompt = [
-        `You are the moderator for a ${mode} multi-agent decision chat.`,
-        "Summarize final recommendation using exactly 3 short bullet points and one final line starting with 'Conclusion:'.",
-        "Be concrete and practical."
-      ].join(" ");
+      const systemPrompt =
+        mode === "cooperative"
+          ? [
+              "You are the synthesis moderator for a cooperative decision discussion.",
+              "Write exactly 3 bullet points and one final line starting with 'Conclusion:'.",
+              "",
+              "Bullet 1: The core recommended action with its primary condition or trigger.",
+              "Bullet 2: The most important risk identified and how it is controlled.",
+              "Bullet 3: The single clearest success signal - how you know it's working.",
+              "",
+              "Rules:",
+              "- Each bullet must be a complete, standalone claim. No vague language.",
+              "- No bullet may depend on another bullet to make sense.",
+              "- Conclusion line must commit to a position. No 'it depends' endings.",
+              "- Concrete and practical. If you can't measure it, don't say it."
+            ].join("\n")
+          : [
+              "You are the synthesis moderator for a competitive decision discussion.",
+              "Write exactly 3 bullet points and one final line starting with 'Conclusion:'.",
+              "",
+              "Bullet 1: The strongest position that survived all challenges in the discussion.",
+              "Bullet 2: The most critical assumption that must be validated before committing - and what happens if it fails.",
+              "Bullet 3: One concrete, falsifiable test that determines go or no-go within a defined timeframe.",
+              "",
+              "Rules:",
+              "- Each bullet must be a complete, standalone claim. No vague language.",
+              "- No bullet may depend on another bullet to make sense.",
+              "- Conclusion line must commit to a position. No 'it depends' endings.",
+              "- Rigorous and decisive. If you can't test it, don't claim it."
+            ].join("\n");
 
       const userPrompt = [
         `Topic: ${topic}`,
@@ -365,22 +528,44 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (method === "POST" && pathname === "/api/judge") {
-      const { topic, cooperativeConclusion, competitiveConclusion } = await readBody(req);
+      const {
+        topic,
+        cooperativeConclusion,
+        competitiveConclusion,
+        cooperativeTranscript = [],
+        competitiveTranscript = []
+      } = await readBody(req);
       if (!topic || !cooperativeConclusion || !competitiveConclusion) {
-        sendJson(res, 400, { error: "topic, cooperativeConclusion, and competitiveConclusion are required" });
+        sendJson(res, 400, {
+          error: "topic, cooperativeConclusion, and competitiveConclusion are required"
+        });
         return;
       }
 
       const systemPrompt = [
-        "You are an impartial judge comparing answer 1 and answer 2 for one question.",
-        "Use only the current prompt content. Do not use any prior conversation context.",
-        "Score each answer from 0 to 10 (one decimal allowed) on: clarity, practicality, usefulness, overall.",
-        "Pick a winner. Use tie only if all four scores are exactly equal.",
+        "You are an impartial judge evaluating two approaches to the same decision question.",
+        "Answer 1 = cooperative. Answer 2 = competitive.",
+        "Use only the content provided in this prompt. No prior context.",
+        "Score each answer on five dimensions (0-10, one decimal): clarity, practicality, usefulness, rigor, overall.",
+        "Use transcript evidence to inform practicality, usefulness, and rigor scores.",
+        "Process quality means: novelty of challenges, logical soundness, evidence use, and quality of trade-off handling in the discussion.",
+        "Scoring rules:",
+        "- Do not reward length or structural complexity over substance.",
+        "- Rigor should reward falsification, assumption-testing, and explicit failure modes - not just having more bullet points.",
+        "- Practicality should reward clarity of next steps, not just naming them.",
+        "- Do not default to tie for politeness. Ties require all five metrics to be exactly equal.",
+        "- A well-structured synthesis and a rigorous falsification approach are equally valid paths to a high score - judge the quality of each on its own terms.",
         "Return only JSON with this exact shape:",
-        '{"winner":"cooperative|competitive|tie","rationale":"short reason","scores":{"cooperative":{"clarity":0,"practicality":0,"usefulness":0,"overall":0},"competitive":{"clarity":0,"practicality":0,"usefulness":0,"overall":0}}}'
-      ].join(" ");
+        '{"winner":"cooperative|competitive|tie","rationale":"short reason","scores":{"cooperative":{"clarity":0,"practicality":0,"usefulness":0,"rigor":0,"overall":0},"competitive":{"clarity":0,"practicality":0,"usefulness":0,"rigor":0,"overall":0}}}'
+      ].join("\n");
 
-      const userPrompt = buildJudgePrompt(topic, cooperativeConclusion, competitiveConclusion);
+      const userPrompt = buildJudgePrompt({
+        topic,
+        cooperativeConclusion,
+        competitiveConclusion,
+        cooperativeTranscript,
+        competitiveTranscript
+      });
 
       const text = await callOpenAI({
         systemPrompt,

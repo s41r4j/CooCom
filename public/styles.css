@@ -209,7 +209,9 @@ body {
 }
 
 .judge-toggle:focus-visible,
-.judge-clear-btn:focus-visible {
+.judge-clear-btn:focus-visible,
+.csv-run-btn:focus-visible,
+.csv-input:focus-visible {
   outline: 3px solid rgba(26, 108, 185, 0.32);
   outline-offset: 2px;
 }
@@ -222,7 +224,8 @@ body {
   stroke-width: 2;
 }
 
-.judge-sidepanel {
+.judge-sidepanel,
+.csv-panel {
   position: fixed;
   top: 50%;
   left: 50%;
@@ -241,7 +244,16 @@ body {
   visibility: visible;
 }
 
-.judge-sidepanel.is-collapsed {
+.csv-panel {
+  z-index: 42;
+  width: min(760px, calc(100vw - 36px));
+  max-height: calc(100dvh - 64px);
+  padding: 0.9rem 0.94rem;
+  background: #e7f0f8;
+}
+
+.judge-sidepanel.is-collapsed,
+.csv-panel.is-collapsed {
   transform: translate(-50%, -47%) scale(0.96);
   opacity: 0;
   visibility: hidden;
@@ -295,6 +307,82 @@ body {
   box-shadow: 2px 2px 0 rgba(18, 34, 54, 0.22);
 }
 
+.csv-panel-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+  margin-bottom: 0.5rem;
+}
+
+.csv-head h3 {
+  margin: 0;
+  font-size: 1rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #1b3f62;
+}
+
+.csv-subtitle {
+  margin: 0.12rem 0 0;
+  color: #47617b;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.csv-input {
+  width: 100%;
+  min-height: 240px;
+  resize: vertical;
+  border: 2px solid #9bb3ca;
+  border-radius: 10px;
+  background: #f8fcff;
+  color: #173654;
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1.35;
+  padding: 0.65rem 0.7rem;
+}
+
+.csv-hint {
+  margin: 0.45rem 0 0;
+  color: #425e79;
+  font-size: 0.82rem;
+}
+
+.csv-hint.is-error {
+  color: #8f3f31;
+  font-weight: 700;
+}
+
+.csv-actions {
+  margin-top: 0.6rem;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.csv-run-btn {
+  border: 2px solid var(--line);
+  border-radius: 10px;
+  padding: 0.52rem 0.9rem;
+  background: #cfe2f3;
+  color: #173654;
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 3px 3px 0 rgba(18, 34, 54, 0.26);
+}
+
+.csv-run-btn:hover:not(:disabled) {
+  transform: translate(-1px, -1px);
+}
+
+.csv-run-btn:disabled {
+  cursor: wait;
+  opacity: 0.68;
+  box-shadow: none;
+}
+
 .judge-grid {
   display: grid;
   gap: 0.38rem;
@@ -328,7 +416,10 @@ body {
 
 .judge-score {
   color: #274b6c;
-  font-size: 0.82rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: right;
+  font-size: 0.78rem;
   font-family: "IBM Plex Mono", "Courier New", monospace;
   font-weight: 700;
 }
@@ -616,7 +707,8 @@ body {
     height: 42px;
   }
 
-  .judge-sidepanel {
+  .judge-sidepanel,
+  .csv-panel {
     top: 50%;
     left: 50%;
     width: min(360px, calc(100vw - 20px));
