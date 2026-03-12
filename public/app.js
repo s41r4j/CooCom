@@ -149,13 +149,16 @@ const MAX_TURNS_PER_MODE = 12;
 const SCORE_STORAGE_KEY = "coocom_round_score_tally_v1";
 const SCORE_HISTORY_STORAGE_KEY = "coocom_round_score_history_v1";
 const CSV_INPUT_STORAGE_KEY = "coocom_csv_input_v1";
+const PROVIDER_SETTINGS_STORAGE_KEY = "coocom_provider_settings_v1";
 const MAX_HISTORY_ITEMS = 60;
 
 const els = {
   topic: document.getElementById("topic"),
   startBtn: document.getElementById("startBtn"),
+  stopBtn: document.getElementById("stopBtn"),
   timer: document.getElementById("timer"),
   status: document.getElementById("status"),
+  settingsToggle: document.getElementById("settingsToggle"),
   coopLog: document.getElementById("coopLog"),
   compLog: document.getElementById("compLog"),
   coopConclusion: document.getElementById("coopConclusion"),
@@ -170,6 +173,13 @@ const els = {
   judgeHistory: document.getElementById("judgeHistory"),
   clearHistoryBtn: document.getElementById("clearHistoryBtn"),
   judgeBackdrop: document.getElementById("judgeBackdrop"),
+  settingsPanel: document.getElementById("settingsPanel"),
+  settingsBackdrop: document.getElementById("settingsBackdrop"),
+  providerSelect: document.getElementById("providerSelect"),
+  apiKeyInput: document.getElementById("apiKeyInput"),
+  settingsHint: document.getElementById("settingsHint"),
+  settingsSaveBtn: document.getElementById("settingsSaveBtn"),
+  settingsCloseBtn: document.getElementById("settingsCloseBtn"),
   csvToggle: document.getElementById("csvToggle"),
   csvPanel: document.getElementById("csvPanel"),
   csvBackdrop: document.getElementById("csvBackdrop"),
@@ -184,7 +194,11 @@ let roundTally = loadTally();
 let roundHistory = loadHistory();
 let isJudgePanelOpen = false;
 let isCsvPanelOpen = false;
+let isSettingsPanelOpen = false;
 let isDiscussionRunning = false;
+let stopRequested = false;
+let providerSettings = loadProviderSettings();
+const activeRequestControllers = new Set();
 
 function formatMs(ms) {
   const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
@@ -225,17 +239,39 @@ function clearUI() {
 }
 
 async function postJson(url, body) {
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
-  });
+  const activeProvider = providerSettings?.provider === "gemini" ? "gemini" : "openai";
+  const activeKey = String(providerSettings?.keys?.[activeProvider] || "").trim();
+  const controller = new AbortController();
+  activeRequestControllers.add(controller);
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        ...body,
+        provider: activeProvider,
+        apiKey: activeKey
+      })
+    });
 
-  const data = await resp.json();
-  if (!resp.ok) {
-    throw new Error(data.error || "Request failed");
+    const data = await resp.json();
+    if (!resp.ok) {
+      throw new Error(data.error || "Request failed");
+    }
+    return data;
+  } finally {
+    activeRequestControllers.delete(controller);
   }
-  return data;
+}
+
+function isAbortError(err) {
+  return err?.name === "AbortError";
+}
+
+function abortActiveRequests() {
+  activeRequestControllers.forEach(controller => controller.abort());
+  activeRequestControllers.clear();
 }
 
 function createAgentState(agentCards) {
@@ -318,6 +354,72 @@ function saveCsvInput(raw) {
   } catch {
     // Ignore localStorage write failures.
   }
+}
+
+function freshProviderSettings() {
+  return {
+    provider: "openai",
+    keys: {
+      openai: "",
+      gemini: ""
+    }
+  };
+}
+
+function sanitizeProvider(value) {
+  return value === "gemini" ? "gemini" : "openai";
+}
+
+function sanitizeKeyValue(value) {
+  return String(value || "").trim();
+}
+
+function loadProviderSettings() {
+  try {
+    const raw = localStorage.getItem(PROVIDER_SETTINGS_STORAGE_KEY);
+    if (!raw) return freshProviderSettings();
+    const parsed = JSON.parse(raw);
+    const next = freshProviderSettings();
+    next.provider = sanitizeProvider(parsed?.provider);
+    next.keys.openai = sanitizeKeyValue(parsed?.keys?.openai);
+    next.keys.gemini = sanitizeKeyValue(parsed?.keys?.gemini);
+    return next;
+  } catch {
+    return freshProviderSettings();
+  }
+}
+
+function saveProviderSettings() {
+  try {
+    localStorage.setItem(PROVIDER_SETTINGS_STORAGE_KEY, JSON.stringify(providerSettings));
+  } catch {
+    // Ignore localStorage write failures and keep in-memory settings.
+  }
+}
+
+function providerLabel(provider) {
+  return provider === "gemini" ? "Gemini" : "OpenAI";
+}
+
+function setSettingsHint(text, isError = false) {
+  if (!els.settingsHint) return;
+  els.settingsHint.textContent = text;
+  els.settingsHint.classList.toggle("is-error", Boolean(isError));
+}
+
+function syncSettingsFormForProvider(provider = providerSettings.provider) {
+  if (!els.providerSelect || !els.apiKeyInput) return;
+  const normalizedProvider = sanitizeProvider(provider);
+  const savedKey = String(providerSettings?.keys?.[normalizedProvider] || "").trim();
+  els.providerSelect.value = normalizedProvider;
+  els.apiKeyInput.value = savedKey;
+  els.apiKeyInput.placeholder =
+    normalizedProvider === "gemini" ? "Enter Gemini API key" : "Enter OpenAI API key";
+  setSettingsHint(
+    savedKey
+      ? `${providerLabel(normalizedProvider)} key loaded from this browser.`
+      : `No saved ${providerLabel(normalizedProvider)} key. Leave blank to use the server environment variable.`
+  );
 }
 
 function formatTimestamp(ts) {
@@ -435,7 +537,22 @@ function clearScoreHistory() {
 function setControlsBusy(busy) {
   isDiscussionRunning = Boolean(busy);
   els.startBtn.disabled = isDiscussionRunning;
+  if (els.stopBtn) {
+    els.stopBtn.disabled = !isDiscussionRunning;
+  }
   els.topic.disabled = isDiscussionRunning;
+  if (els.settingsToggle) {
+    els.settingsToggle.disabled = isDiscussionRunning;
+  }
+  if (els.settingsSaveBtn) {
+    els.settingsSaveBtn.disabled = isDiscussionRunning;
+  }
+  if (els.providerSelect) {
+    els.providerSelect.disabled = isDiscussionRunning;
+  }
+  if (els.apiKeyInput) {
+    els.apiKeyInput.disabled = isDiscussionRunning;
+  }
   if (els.csvToggle) {
     els.csvToggle.disabled = isDiscussionRunning;
   }
@@ -449,6 +566,9 @@ function setJudgePanelOpen(open) {
   if (!els.judgePanel || !els.judgeToggle) return;
   if (isJudgePanelOpen && isCsvPanelOpen) {
     setCsvPanelOpen(false);
+  }
+  if (isJudgePanelOpen && isSettingsPanelOpen) {
+    setSettingsPanelOpen(false);
   }
   els.judgePanel.classList.toggle("is-collapsed", !isJudgePanelOpen);
   els.judgePanel.setAttribute("aria-hidden", isJudgePanelOpen ? "false" : "true");
@@ -467,6 +587,38 @@ function toggleJudgePanel() {
   setJudgePanelOpen(!isJudgePanelOpen);
 }
 
+function setSettingsPanelOpen(open) {
+  isSettingsPanelOpen = Boolean(open);
+  if (!els.settingsPanel || !els.settingsToggle) return;
+  if (isSettingsPanelOpen && isJudgePanelOpen) {
+    setJudgePanelOpen(false);
+  }
+  if (isSettingsPanelOpen && isCsvPanelOpen) {
+    setCsvPanelOpen(false);
+  }
+  if (isSettingsPanelOpen) {
+    syncSettingsFormForProvider(providerSettings.provider);
+  }
+  els.settingsPanel.classList.toggle("is-collapsed", !isSettingsPanelOpen);
+  els.settingsPanel.setAttribute("aria-hidden", isSettingsPanelOpen ? "false" : "true");
+  if (els.settingsBackdrop) {
+    els.settingsBackdrop.classList.toggle("is-hidden", !isSettingsPanelOpen);
+    els.settingsBackdrop.setAttribute("aria-hidden", isSettingsPanelOpen ? "false" : "true");
+  }
+  els.settingsToggle.setAttribute("aria-expanded", isSettingsPanelOpen ? "true" : "false");
+  const label = isSettingsPanelOpen ? "Close provider settings" : "Open provider settings";
+  els.settingsToggle.setAttribute("aria-label", label);
+  els.settingsToggle.setAttribute("title", label);
+  els.settingsToggle.classList.toggle("is-active", isSettingsPanelOpen);
+  if (isSettingsPanelOpen && els.providerSelect) {
+    requestAnimationFrame(() => els.providerSelect.focus());
+  }
+}
+
+function toggleSettingsPanel() {
+  setSettingsPanelOpen(!isSettingsPanelOpen);
+}
+
 function setCsvHint(text, isError = false) {
   if (!els.csvHint) return;
   els.csvHint.textContent = text;
@@ -478,6 +630,9 @@ function setCsvPanelOpen(open) {
   if (!els.csvPanel || !els.csvToggle) return;
   if (isCsvPanelOpen && isJudgePanelOpen) {
     setJudgePanelOpen(false);
+  }
+  if (isCsvPanelOpen && isSettingsPanelOpen) {
+    setSettingsPanelOpen(false);
   }
   els.csvPanel.classList.toggle("is-collapsed", !isCsvPanelOpen);
   els.csvPanel.setAttribute("aria-hidden", isCsvPanelOpen ? "false" : "true");
@@ -496,6 +651,34 @@ function setCsvPanelOpen(open) {
 
 function toggleCsvPanel() {
   setCsvPanelOpen(!isCsvPanelOpen);
+}
+
+function stopDiscussion() {
+  if (!isDiscussionRunning) return;
+  stopRequested = true;
+  stopCountdown();
+  els.timer.textContent = "00:00";
+  setStatus("Stopping discussion...");
+  abortActiveRequests();
+}
+
+function saveSettingsFromPanel() {
+  const provider = sanitizeProvider(els.providerSelect?.value);
+  const key = sanitizeKeyValue(els.apiKeyInput?.value);
+  providerSettings = {
+    provider,
+    keys: {
+      openai: sanitizeKeyValue(providerSettings?.keys?.openai),
+      gemini: sanitizeKeyValue(providerSettings?.keys?.gemini),
+      [provider]: key
+    }
+  };
+  saveProviderSettings();
+  syncSettingsFormForProvider(provider);
+  setSettingsPanelOpen(false);
+  setStatus(
+    `Provider set to ${providerLabel(provider)}${key ? " with a browser-saved key." : " using the server environment key if available."}`
+  );
 }
 
 function stopCountdown() {
@@ -691,7 +874,7 @@ async function runOneMode({ mode, topic, deadline, logEl, conclusionEl, agentCar
   let lastSpeakerId = null;
   let turn = 0;
 
-  while (Date.now() < deadline && turn < MAX_TURNS_PER_MODE) {
+  while (!stopRequested && Date.now() < deadline && turn < MAX_TURNS_PER_MODE) {
     const remaining = deadline - Date.now();
     if (remaining <= ALERT_THRESHOLD_MS && !alertSent) {
       const alertText = "10 seconds left. Wrap up your strongest points.";
@@ -726,6 +909,10 @@ async function runOneMode({ mode, topic, deadline, logEl, conclusionEl, agentCar
         wrapUp: alertSent,
         turnIndex: turn
       });
+      if (stopRequested) {
+        typingNode.remove();
+        break;
+      }
       typingNode.remove();
       appendMessage(logEl, agentLabel(agentCard), data.text);
       transcript.push({
@@ -741,6 +928,9 @@ async function runOneMode({ mode, topic, deadline, logEl, conclusionEl, agentCar
       lastSpeakerId = agentCard.id;
     } catch (err) {
       typingNode.remove();
+      if (stopRequested || isAbortError(err)) {
+        break;
+      }
       appendMessage(logEl, "Error", err.message || "Failed to fetch agent response.");
       break;
     }
@@ -753,14 +943,27 @@ async function runOneMode({ mode, topic, deadline, logEl, conclusionEl, agentCar
     }
   }
 
+  if (stopRequested) {
+    conclusionEl.textContent = "Discussion stopped before final conclusion.";
+    return { transcript, conclusion: conclusionEl.textContent, stopped: true };
+  }
+
   try {
     const out = await postJson("/api/conclusion", { topic, mode, transcript });
+    if (stopRequested) {
+      conclusionEl.textContent = "Discussion stopped before final conclusion.";
+      return { transcript, conclusion: conclusionEl.textContent, stopped: true };
+    }
     conclusionEl.textContent = out.text;
   } catch (err) {
+    if (stopRequested || isAbortError(err)) {
+      conclusionEl.textContent = "Discussion stopped before final conclusion.";
+      return { transcript, conclusion: conclusionEl.textContent, stopped: true };
+    }
     conclusionEl.textContent = `Failed to generate conclusion: ${err.message || "Unknown error"}`;
   }
 
-  return { transcript, conclusion: String(conclusionEl.textContent || "").trim() };
+  return { transcript, conclusion: String(conclusionEl.textContent || "").trim(), stopped: false };
 }
 
 function startCountdown(deadline) {
@@ -813,6 +1016,12 @@ async function runRound({ topic, historyTopic = topic, statusPrefix = "", openJu
     const cooperativeTranscript = Array.isArray(coopResult?.transcript) ? coopResult.transcript : [];
     const competitiveTranscript = Array.isArray(compResult?.transcript) ? compResult.transcript : [];
 
+    if (stopRequested || coopResult?.stopped || compResult?.stopped) {
+      setJudgePending("Scoring skipped because the discussion was stopped.");
+      setStatus(`${prefix}Stopped. Discussion ended before scoring.`);
+      return { winner: null, scored: false, stopped: true };
+    }
+
     if (hasUsableConclusion(cooperativeConclusion) && hasUsableConclusion(competitiveConclusion)) {
       setStatus(`${prefix}Scoring final conclusions...`);
       try {
@@ -823,18 +1032,28 @@ async function runRound({ topic, historyTopic = topic, statusPrefix = "", openJu
           cooperativeTranscript,
           competitiveTranscript
         });
+        if (stopRequested) {
+          setJudgePending("Scoring skipped because the discussion was stopped.");
+          setStatus(`${prefix}Stopped. Discussion ended before scoring.`);
+          return { winner: null, scored: false, stopped: true };
+        }
         const winner = renderJudgeResult(judge, historyTopic, { openPanel: openJudgePanel });
         setStatus(`${prefix}Done. ${winnerLabel(winner)} won this round.`);
-        return { winner, scored: true };
+        return { winner, scored: true, stopped: false };
       } catch (err) {
+        if (stopRequested || isAbortError(err)) {
+          setJudgePending("Scoring skipped because the discussion was stopped.");
+          setStatus(`${prefix}Stopped. Discussion ended before scoring.`);
+          return { winner: null, scored: false, stopped: true };
+        }
         setJudgeError(`Scoring failed: ${err.message || "Unknown error"}`);
         setStatus(`${prefix}Done. Conclusions generated, but scoring failed.`);
-        return { winner: null, scored: false };
+        return { winner: null, scored: false, stopped: false };
       }
     } else {
       setJudgeError("Scoring skipped because one of the conclusions was unavailable.");
       setStatus(`${prefix}Done. Conclusions generated (scoring skipped).`);
-      return { winner: null, scored: false };
+      return { winner: null, scored: false, stopped: false };
     }
   } finally {
     stopCountdown();
@@ -850,10 +1069,13 @@ async function startDiscussion() {
     return;
   }
 
+  stopRequested = false;
   setControlsBusy(true);
   try {
     await runRound({ topic, openJudgePanel: true });
   } finally {
+    abortActiveRequests();
+    stopRequested = false;
     setControlsBusy(false);
   }
 }
@@ -873,11 +1095,14 @@ async function runCsvTests() {
   }
 
   setCsvPanelOpen(false);
+  stopRequested = false;
   setControlsBusy(true);
 
   const totals = { cooperative: 0, competitive: 0, tie: 0, failed: 0 };
+  let completed = 0;
   try {
     for (let i = 0; i < rows.length; i += 1) {
+      if (stopRequested) break;
       const row = rows[i];
       els.topic.value = row.question;
       const prefix = `Batch ${i + 1}/${rows.length} [ID ${row.id}]`;
@@ -887,11 +1112,23 @@ async function runCsvTests() {
         statusPrefix: prefix,
         openJudgePanel: false
       });
+      if (result?.stopped || stopRequested) {
+        break;
+      }
+      completed += 1;
       if (result.winner && Object.prototype.hasOwnProperty.call(totals, result.winner)) {
         totals[result.winner] += 1;
       } else {
         totals.failed += 1;
       }
+    }
+    if (stopRequested) {
+      setJudgePanelOpen(true);
+      setStatus(
+        `Batch stopped after ${completed}/${rows.length} completed round(s). Cooperative ${totals.cooperative} | Competitive ${totals.competitive} | Ties ${totals.tie}.`
+      );
+      setCsvHint(`Stopped after ${completed} completed round(s).`);
+      return;
     }
     setJudgePanelOpen(true);
     const failedPart = totals.failed > 0 ? ` | Failed ${totals.failed}` : "";
@@ -900,11 +1137,33 @@ async function runCsvTests() {
     );
     setCsvHint(`Completed ${rows.length} test round(s).`);
   } finally {
+    abortActiveRequests();
+    stopRequested = false;
     setControlsBusy(false);
   }
 }
 
 els.startBtn.addEventListener("click", startDiscussion);
+if (els.stopBtn) {
+  els.stopBtn.addEventListener("click", stopDiscussion);
+}
+if (els.settingsToggle) {
+  els.settingsToggle.addEventListener("click", toggleSettingsPanel);
+}
+if (els.settingsBackdrop) {
+  els.settingsBackdrop.addEventListener("click", () => setSettingsPanelOpen(false));
+}
+if (els.settingsCloseBtn) {
+  els.settingsCloseBtn.addEventListener("click", () => setSettingsPanelOpen(false));
+}
+if (els.settingsSaveBtn) {
+  els.settingsSaveBtn.addEventListener("click", saveSettingsFromPanel);
+}
+if (els.providerSelect) {
+  els.providerSelect.addEventListener("change", event => {
+    syncSettingsFormForProvider(event.target.value);
+  });
+}
 if (els.judgeToggle) {
   els.judgeToggle.addEventListener("click", toggleJudgePanel);
 }
@@ -935,6 +1194,10 @@ if (els.csvInput) {
 }
 document.addEventListener("keydown", event => {
   if (event.key !== "Escape") return;
+  if (isSettingsPanelOpen) {
+    setSettingsPanelOpen(false);
+    return;
+  }
   if (isCsvPanelOpen) {
     setCsvPanelOpen(false);
     return;
@@ -947,5 +1210,7 @@ els.timer.textContent = formatMs(MAX_MS);
 renderTally();
 renderHistory();
 setJudgePending("Scoring will appear after both final conclusions.");
+syncSettingsFormForProvider(providerSettings.provider);
+setSettingsPanelOpen(false);
 setJudgePanelOpen(false);
 setCsvPanelOpen(false);

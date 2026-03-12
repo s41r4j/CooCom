@@ -10,7 +10,10 @@ const publicDir = path.join(__dirname, "public");
 const PORT = process.env.PORT || 3000;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 const VALID_MODES = new Set(["cooperative", "competitive"]);
+const VALID_PROVIDERS = new Set(["openai", "gemini"]);
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -57,6 +60,23 @@ function transcriptToText(transcript = []) {
       return `${speaker}${lens}: ${content}`;
     })
     .join("\n");
+}
+
+function normalizeProvider(value) {
+  const token = String(value || "").trim().toLowerCase();
+  if (!token) return "openai";
+  return VALID_PROVIDERS.has(token) ? token : null;
+}
+
+function resolveProviderSelection(body = {}) {
+  const provider = normalizeProvider(body?.provider);
+  if (!provider) {
+    throw new Error("Invalid provider. Use openai or gemini.");
+  }
+  return {
+    provider,
+    apiKey: String(body?.apiKey || "").trim()
+  };
 }
 
 function recentTranscript(transcript = [], maxItems = 16) {
@@ -238,6 +258,22 @@ ${compDiscussion || "(No competitive transcript provided)"}
 \`\`\``;
 }
 
+function countWords(text) {
+  return String(text || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
+}
+
+function isWeakAgentTurn(text) {
+  const value = String(text || "").trim();
+  if (!value) return true;
+  if (countWords(value) < 16) return true;
+  if (/[,:;]$/.test(value)) return true;
+  if (!/[.!?]["')\]]?$/.test(value)) return true;
+  return false;
+}
+
 function parseJudgeJson(rawText) {
   const raw = String(rawText || "").trim();
   if (!raw) throw new Error("Judge response was empty");
@@ -306,15 +342,22 @@ function extractText(responseJson) {
   return chunks.join("\n").trim();
 }
 
-async function callOpenAI({ systemPrompt, userPrompt, maxOutputTokens = 180, temperature = 0.7 }) {
-  if (!OPENAI_API_KEY) {
-    throw new Error("OPENAI_API_KEY is missing");
+async function callOpenAI({
+  apiKey,
+  systemPrompt,
+  userPrompt,
+  maxOutputTokens = 180,
+  temperature = 0.7
+}) {
+  const resolvedKey = String(apiKey || OPENAI_API_KEY || "").trim();
+  if (!resolvedKey) {
+    throw new Error("OpenAI API key is missing");
   }
 
   const resp = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
+      Authorization: `Bearer ${resolvedKey}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
@@ -347,6 +390,154 @@ async function callOpenAI({ systemPrompt, userPrompt, maxOutputTokens = 180, tem
   return text;
 }
 
+function extractGeminiText(responseJson) {
+  const candidates = Array.isArray(responseJson?.candidates) ? responseJson.candidates : [];
+  const parts = candidates.flatMap(candidate => {
+    const contentParts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
+    return contentParts
+      .map(part => (typeof part?.text === "string" ? part.text : ""))
+      .filter(Boolean);
+  });
+
+  const text = parts.join("\n").trim();
+  if (text) return text;
+
+  const blockReason = responseJson?.promptFeedback?.blockReason;
+  if (blockReason) {
+    throw new Error(`Gemini blocked the prompt: ${blockReason}`);
+  }
+  throw new Error("Gemini response was empty");
+}
+
+async function callGemini({
+  apiKey,
+  systemPrompt,
+  userPrompt,
+  maxOutputTokens = 180,
+  temperature = 0.7
+}) {
+  const resolvedKey = String(apiKey || GEMINI_API_KEY || "").trim();
+  if (!resolvedKey) {
+    throw new Error("Gemini API key is missing");
+  }
+
+  const payload = {
+    contents: [
+      {
+        role: "user",
+        parts: [{ text: userPrompt }]
+      }
+    ],
+    generationConfig: {
+      temperature,
+      maxOutputTokens
+    }
+  };
+
+  if (systemPrompt) {
+    payload.system_instruction = {
+      parts: [{ text: systemPrompt }]
+    };
+  }
+
+  const resp = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": resolvedKey
+      },
+      body: JSON.stringify(payload)
+    }
+  );
+
+  const data = await resp.json();
+  if (!resp.ok) {
+    const msg = data?.error?.message || "Gemini request failed";
+    throw new Error(msg);
+  }
+
+  return extractGeminiText(data);
+}
+
+async function callModel({
+  provider = "openai",
+  apiKey = "",
+  systemPrompt,
+  userPrompt,
+  maxOutputTokens = 180,
+  temperature = 0.7
+}) {
+  if (provider === "gemini") {
+    return callGemini({
+      apiKey,
+      systemPrompt,
+      userPrompt,
+      maxOutputTokens,
+      temperature
+    });
+  }
+
+  const resolvedKey = String(apiKey || OPENAI_API_KEY || "").trim();
+  if (!resolvedKey) {
+    throw new Error("OpenAI API key is missing");
+  }
+
+  return callOpenAI({
+    apiKey: resolvedKey,
+    systemPrompt,
+    userPrompt,
+    maxOutputTokens,
+    temperature
+  });
+}
+
+async function generateAgentTurn({
+  provider,
+  apiKey,
+  systemPrompt,
+  userPrompt,
+  maxOutputTokens,
+  temperature
+}) {
+  const firstPass = await callModel({
+    provider,
+    apiKey,
+    systemPrompt,
+    userPrompt,
+    maxOutputTokens,
+    temperature
+  });
+
+  if (!isWeakAgentTurn(firstPass)) {
+    return firstPass;
+  }
+
+  const repairedSystemPrompt = [
+    systemPrompt,
+    "Additional requirement:",
+    "- Write 2 to 4 complete sentences, roughly 28 to 85 words.",
+    "- Finish every sentence. No fragments, no trailing clauses, no opener-only responses.",
+    "- Make one self-contained contribution with a concrete claim, risk, trade-off, or action."
+  ].join("\n");
+
+  const repairedUserPrompt = [
+    userPrompt,
+    "Important: your previous attempt was too short or incomplete.",
+    "Return a fully finished response now."
+  ].join("\n\n");
+
+  return callModel({
+    provider,
+    apiKey,
+    systemPrompt: repairedSystemPrompt,
+    userPrompt: repairedUserPrompt,
+    maxOutputTokens,
+    temperature: Math.max(0.65, temperature - 0.05)
+  });
+}
+
 async function serveStatic(req, res, pathname) {
   const cleanPath = pathname === "/" ? "/index.html" : pathname;
   const fullPath = path.join(publicDir, cleanPath);
@@ -373,6 +564,15 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (method === "POST" && pathname === "/api/agent-turn") {
+      const body = await readBody(req);
+      let providerConfig;
+      try {
+        providerConfig = resolveProviderSelection(body);
+      } catch (err) {
+        sendJson(res, 400, { error: err.message || "Invalid provider configuration" });
+        return;
+      }
+
       const {
         topic,
         mode,
@@ -386,7 +586,7 @@ const server = http.createServer(async (req, res) => {
         transcript = [],
         wrapUp = false,
         turnIndex = 0
-      } = await readBody(req);
+      } = body;
       if (!topic || !mode || !agent) {
         sendJson(res, 400, { error: "topic, mode, and agent are required" });
         return;
@@ -436,9 +636,10 @@ const server = http.createServer(async (req, res) => {
           ? `Voice anchors (weave in at most one naturally): ${phraseList.map(p => `"${p}"`).join(", ")}.`
           : "",
         "Hard rules:",
-        "- Under 85 words.",
+        "- Write 2 to 4 complete sentences, roughly 28 to 85 words.",
         "- No bullets.",
         "- No roleplay markup.",
+        "- Finish every sentence. No fragments or trailing clauses.",
         "- If a point is already covered, your only option is to deepen or challenge it - never restate it.",
         "- Anchor briefly to one prior idea, then advance it from your unique lens."
       ]
@@ -460,7 +661,9 @@ const server = http.createServer(async (req, res) => {
 
       const turnTemperature = mode === "competitive" ? 0.85 : 0.72;
 
-      const text = await callOpenAI({
+      const text = await generateAgentTurn({
+        provider: providerConfig.provider,
+        apiKey: providerConfig.apiKey,
         systemPrompt,
         userPrompt,
         maxOutputTokens: 150,
@@ -472,7 +675,16 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (method === "POST" && pathname === "/api/conclusion") {
-      const { topic, mode, transcript = [] } = await readBody(req);
+      const body = await readBody(req);
+      let providerConfig;
+      try {
+        providerConfig = resolveProviderSelection(body);
+      } catch (err) {
+        sendJson(res, 400, { error: err.message || "Invalid provider configuration" });
+        return;
+      }
+
+      const { topic, mode, transcript = [] } = body;
       if (!topic || !mode) {
         sendJson(res, 400, { error: "topic and mode are required" });
         return;
@@ -516,7 +728,9 @@ const server = http.createServer(async (req, res) => {
         "Provide final conclusion now."
       ].join("\n\n");
 
-      const text = await callOpenAI({
+      const text = await callModel({
+        provider: providerConfig.provider,
+        apiKey: providerConfig.apiKey,
         systemPrompt,
         userPrompt,
         maxOutputTokens: 200,
@@ -528,13 +742,22 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (method === "POST" && pathname === "/api/judge") {
+      const body = await readBody(req);
+      let providerConfig;
+      try {
+        providerConfig = resolveProviderSelection(body);
+      } catch (err) {
+        sendJson(res, 400, { error: err.message || "Invalid provider configuration" });
+        return;
+      }
+
       const {
         topic,
         cooperativeConclusion,
         competitiveConclusion,
         cooperativeTranscript = [],
         competitiveTranscript = []
-      } = await readBody(req);
+      } = body;
       if (!topic || !cooperativeConclusion || !competitiveConclusion) {
         sendJson(res, 400, {
           error: "topic, cooperativeConclusion, and competitiveConclusion are required"
@@ -567,7 +790,9 @@ const server = http.createServer(async (req, res) => {
         competitiveTranscript
       });
 
-      const text = await callOpenAI({
+      const text = await callModel({
+        provider: providerConfig.provider,
+        apiKey: providerConfig.apiKey,
         systemPrompt,
         userPrompt,
         maxOutputTokens: 260,

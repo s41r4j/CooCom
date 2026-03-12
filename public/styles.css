@@ -89,6 +89,13 @@ body {
   gap: 0.48rem;
 }
 
+.timer-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.48rem;
+}
+
 .topbar-subtitle {
   margin: 0;
   color: var(--muted);
@@ -125,6 +132,7 @@ body {
 }
 
 #startBtn,
+#stopBtn,
 #timer {
   border: 2px solid var(--line);
   border-radius: 10px;
@@ -153,8 +161,37 @@ body {
   box-shadow: none;
 }
 
-#timer {
+#stopBtn {
+  width: 104px;
+  min-width: 104px;
   padding: 0.34rem 0.62rem;
+  background: #f2ddd9;
+  color: #6f3328;
+  font-family: "IBM Plex Mono", "Courier New", monospace;
+  font-weight: 800;
+  font-size: 0.9rem;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+#stopBtn:hover:not(:disabled) {
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 rgba(18, 34, 54, 0.32);
+}
+
+#stopBtn:disabled {
+  cursor: not-allowed;
+  background: #d7dde5;
+  color: #5c6f82;
+  box-shadow: none;
+}
+
+#timer {
+  width: 104px;
+  min-width: 104px;
+  padding: 0.34rem 0.62rem;
+  text-align: center;
   font-family: "IBM Plex Mono", "Courier New", monospace;
   font-weight: 800;
   font-size: 1rem;
@@ -211,7 +248,10 @@ body {
 .judge-toggle:focus-visible,
 .judge-clear-btn:focus-visible,
 .csv-run-btn:focus-visible,
-.csv-input:focus-visible {
+.csv-input:focus-visible,
+.settings-select:focus-visible,
+.settings-key:focus-visible,
+.settings-save-btn:focus-visible {
   outline: 3px solid rgba(26, 108, 185, 0.32);
   outline-offset: 2px;
 }
@@ -225,7 +265,8 @@ body {
 }
 
 .judge-sidepanel,
-.csv-panel {
+.csv-panel,
+.settings-panel {
   position: fixed;
   top: 50%;
   left: 50%;
@@ -252,8 +293,16 @@ body {
   background: #e7f0f8;
 }
 
+.settings-panel {
+  z-index: 43;
+  width: min(560px, calc(100vw - 36px));
+  padding: 0.9rem 0.94rem;
+  background: #e9f1f8;
+}
+
 .judge-sidepanel.is-collapsed,
-.csv-panel.is-collapsed {
+.csv-panel.is-collapsed,
+.settings-panel.is-collapsed {
   transform: translate(-50%, -47%) scale(0.96);
   opacity: 0;
   visibility: hidden;
@@ -315,6 +364,14 @@ body {
   margin-bottom: 0.5rem;
 }
 
+.settings-panel-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+  margin-bottom: 0.7rem;
+}
+
 .csv-head h3 {
   margin: 0;
   font-size: 1rem;
@@ -328,6 +385,88 @@ body {
   color: #47617b;
   font-size: 0.85rem;
   font-weight: 700;
+}
+
+.settings-head h3 {
+  margin: 0;
+  font-size: 1rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #1b3f62;
+}
+
+.settings-subtitle {
+  margin: 0.12rem 0 0;
+  color: #47617b;
+  font-size: 0.85rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.settings-form {
+  display: grid;
+  gap: 0.48rem;
+}
+
+.settings-field-label {
+  font-size: 0.84rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #1f3f5f;
+}
+
+.settings-select,
+.settings-key {
+  width: 100%;
+  border: 2px solid #9bb3ca;
+  border-radius: 10px;
+  background: #f8fcff;
+  color: #173654;
+  font: inherit;
+  font-size: 0.95rem;
+  padding: 0.68rem 0.72rem;
+}
+
+.settings-help,
+.settings-hint {
+  margin: 0;
+  color: #425e79;
+  font-size: 0.82rem;
+  line-height: 1.36;
+}
+
+.settings-hint.is-error {
+  color: #8f3f31;
+  font-weight: 700;
+}
+
+.settings-actions {
+  margin-top: 0.18rem;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.settings-save-btn {
+  border: 2px solid var(--line);
+  border-radius: 10px;
+  padding: 0.52rem 0.9rem;
+  background: #cfe2f3;
+  color: #173654;
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 3px 3px 0 rgba(18, 34, 54, 0.26);
+}
+
+.settings-save-btn:hover:not(:disabled) {
+  transform: translate(-1px, -1px);
+}
+
+.settings-save-btn:disabled {
+  cursor: wait;
+  opacity: 0.68;
+  box-shadow: none;
 }
 
 .csv-input {
@@ -707,8 +846,15 @@ body {
     height: 42px;
   }
 
+  #stopBtn,
+  #timer {
+    width: 96px;
+    min-width: 96px;
+  }
+
   .judge-sidepanel,
-  .csv-panel {
+  .csv-panel,
+  .settings-panel {
     top: 50%;
     left: 50%;
     width: min(360px, calc(100vw - 20px));

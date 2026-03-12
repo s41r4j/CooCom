@@ -1,8 +1,9 @@
 # CooCom Agentic Chat (Simple)
 
-Two-side OpenAI API decision chat:
+Two-side API decision chat:
 - Left: 4 cooperative agents
 - Right: 4 competitive agents
+- Provider support: OpenAI or Gemini (switchable from in-app settings)
 
 Rules implemented:
 - Max 4 agents per side.
@@ -15,21 +16,27 @@ Rules implemented:
 - Automatic judge scores both conclusions on `clarity`, `practicality`, `usefulness`, `rigor`, and `overall`, using transcript evidence for process quality, then picks a winner.
 - Session scoreboard tracks cumulative wins for cooperative vs competitive (and ties).
 - Scoreboard keeps per-round history in localStorage and can be cleared.
+- Settings modal stores selected provider plus per-provider API keys in localStorage for this browser.
 - CSV test runner (`+` icon) accepts pasted `id,question` data and executes rounds sequentially.
 
 ## Run
 
-1. Export API key:
+1. Optional server-side OpenAI API key:
    ```bash
    export OPENAI_API_KEY="your_key_here"
    ```
 2. Optional model override:
    ```bash
    export OPENAI_MODEL="gpt-4.1-mini"
+   export GEMINI_MODEL="gemini-2.5-flash"
    ```
-3. Start server:
+3. Optional server-side API keys:
+   ```bash
+   export GEMINI_API_KEY="your_gemini_key_here"
+   ```
+4. Start server:
    ```bash
    npm start
    ```
-4. Open:
+5. Open:
    `http://localhost:3000`

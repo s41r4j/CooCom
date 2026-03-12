@@ -18,6 +18,27 @@
             <div class="topbar-actions">
               <div class="topbar-button-row">
                 <button
+                  id="settingsToggle"
+                  class="judge-toggle icon-only"
+                  type="button"
+                  aria-controls="settingsPanel"
+                  aria-expanded="false"
+                  aria-label="Open provider settings"
+                  title="Open provider settings"
+                >
+                  <svg class="judge-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M4 6h8"></path>
+                    <path d="M18 6h2"></path>
+                    <circle cx="14" cy="6" r="2"></circle>
+                    <path d="M4 12h4"></path>
+                    <path d="M14 12h6"></path>
+                    <circle cx="10" cy="12" r="2"></circle>
+                    <path d="M4 18h10"></path>
+                    <path d="M18 18h2"></path>
+                    <circle cx="16" cy="18" r="2"></circle>
+                  </svg>
+                </button>
+                <button
                   id="judgeToggle"
                   class="judge-toggle icon-only"
                   type="button"
@@ -49,7 +70,10 @@
                 </button>
                 <button id="startBtn">Start Discussion</button>
               </div>
-              <div id="timer">00:30</div>
+              <div class="timer-row">
+                <button id="stopBtn" type="button" disabled>Stop</button>
+                <div id="timer">00:30</div>
+              </div>
             </div>
           </div>
         </header>
@@ -92,6 +116,44 @@
 
     <div id="judgeBackdrop" class="judge-backdrop is-hidden" aria-hidden="true"></div>
     <div id="csvBackdrop" class="judge-backdrop is-hidden" aria-hidden="true"></div>
+    <div id="settingsBackdrop" class="judge-backdrop is-hidden" aria-hidden="true"></div>
+
+    <aside id="settingsPanel" class="settings-panel is-collapsed" aria-hidden="true" aria-live="polite">
+      <div class="settings-panel-top">
+        <div class="settings-head">
+          <h3>Provider Settings</h3>
+          <p class="settings-subtitle">Choose OpenAI or Gemini and store the key locally in this browser.</p>
+        </div>
+        <button id="settingsCloseBtn" class="judge-clear-btn" type="button">Close</button>
+      </div>
+
+      <div class="settings-form">
+        <label class="settings-field-label" for="providerSelect">Provider</label>
+        <select id="providerSelect" class="settings-select">
+          <option value="openai">OpenAI</option>
+          <option value="gemini">Gemini</option>
+        </select>
+
+        <label class="settings-field-label" for="apiKeyInput">API Key</label>
+        <input
+          id="apiKeyInput"
+          class="settings-key"
+          type="password"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Enter API key for selected provider"
+        />
+
+        <p class="settings-help">
+          Saved only in this browser. Leave the field blank to fall back to the matching server environment variable.
+        </p>
+        <p id="settingsHint" class="settings-hint">OpenAI is selected by default.</p>
+
+        <div class="settings-actions">
+          <button id="settingsSaveBtn" class="settings-save-btn" type="button">Save Settings</button>
+        </div>
+      </div>
+    </aside>
 
     <aside id="judgePanel" class="judge-sidepanel is-collapsed" aria-hidden="true" aria-live="polite">
       <div class="judge-panel-top">
