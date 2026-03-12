@@ -145,12 +145,25 @@ function pickRoundAgents() {
 
 const MAX_MS = 30 * 1000;
 const ALERT_THRESHOLD_MS = 10 * 1000;
-const MAX_TURNS_PER_MODE = 12;
+// Safety cap only; the 30-second deadline should usually end the round first.
+const MAX_TURNS_PER_MODE = 24;
 const SCORE_STORAGE_KEY = "coocom_round_score_tally_v1";
 const SCORE_HISTORY_STORAGE_KEY = "coocom_round_score_history_v1";
 const CSV_INPUT_STORAGE_KEY = "coocom_csv_input_v1";
 const PROVIDER_SETTINGS_STORAGE_KEY = "coocom_provider_settings_v1";
 const MAX_HISTORY_ITEMS = 60;
+const DEFAULT_PROVIDER_MODELS = {
+  openai: "gpt-5.2",
+  gemini: "gemini-2.5-flash"
+};
+const DEFAULT_RUNTIME_SETTINGS = {
+  cooperativeTemperature: 0.72,
+  competitiveTemperature: 0.85,
+  conclusionTemperature: 0.4,
+  judgeTemperature: 0.2,
+  separateJudgeModel: false,
+  judgeGeminiThinking: false
+};
 
 const els = {
   topic: document.getElementById("topic"),
@@ -175,8 +188,23 @@ const els = {
   judgeBackdrop: document.getElementById("judgeBackdrop"),
   settingsPanel: document.getElementById("settingsPanel"),
   settingsBackdrop: document.getElementById("settingsBackdrop"),
-  providerSelect: document.getElementById("providerSelect"),
-  apiKeyInput: document.getElementById("apiKeyInput"),
+  openaiKeyInput: document.getElementById("openaiKeyInput"),
+  geminiKeyInput: document.getElementById("geminiKeyInput"),
+  chatProviderSelect: document.getElementById("chatProviderSelect"),
+  chatModelSelect: document.getElementById("chatModelSelect"),
+  chatModelLoadBtn: document.getElementById("chatModelLoadBtn"),
+  coopTempInput: document.getElementById("coopTempInput"),
+  compTempInput: document.getElementById("compTempInput"),
+  conclusionTempInput: document.getElementById("conclusionTempInput"),
+  separateJudgeToggle: document.getElementById("separateJudgeToggle"),
+  judgeConfigGroup: document.getElementById("judgeConfigGroup"),
+  judgeModeHint: document.getElementById("judgeModeHint"),
+  judgeProviderSelect: document.getElementById("judgeProviderSelect"),
+  judgeModelSelect: document.getElementById("judgeModelSelect"),
+  judgeModelLoadBtn: document.getElementById("judgeModelLoadBtn"),
+  judgeTempInput: document.getElementById("judgeTempInput"),
+  judgeGeminiThinkingToggle: document.getElementById("judgeGeminiThinkingToggle"),
+  judgeThinkingRow: document.getElementById("judgeThinkingRow"),
   settingsHint: document.getElementById("settingsHint"),
   settingsSaveBtn: document.getElementById("settingsSaveBtn"),
   settingsCloseBtn: document.getElementById("settingsCloseBtn"),
@@ -199,6 +227,14 @@ let isDiscussionRunning = false;
 let stopRequested = false;
 let providerSettings = loadProviderSettings();
 const activeRequestControllers = new Set();
+const providerModelCatalog = {
+  openai: [],
+  gemini: []
+};
+const modelLoadState = {
+  chat: false,
+  judge: false
+};
 
 function formatMs(ms) {
   const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
@@ -238,9 +274,40 @@ function clearUI() {
   setJudgePending("Scoring will appear after both final conclusions.");
 }
 
-async function postJson(url, body) {
-  const activeProvider = providerSettings?.provider === "gemini" ? "gemini" : "openai";
-  const activeKey = String(providerSettings?.keys?.[activeProvider] || "").trim();
+function defaultModelForProvider(provider) {
+  return provider === "gemini" ? DEFAULT_PROVIDER_MODELS.gemini : DEFAULT_PROVIDER_MODELS.openai;
+}
+
+function sanitizeModelValue(value, provider = "openai") {
+  let model = String(value || "").trim();
+  if (!model) return defaultModelForProvider(provider);
+  if (provider === "gemini") {
+    model = model.replace(/^models\//i, "");
+  }
+  return model;
+}
+
+function sanitizeTemperatureValue(value, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const bounded = Math.max(0, Math.min(2, n));
+  return Math.round(bounded * 100) / 100;
+}
+
+function effectiveJudgeProvider(settings = providerSettings) {
+  return settings?.judge?.separate ? sanitizeProvider(settings?.judge?.provider) : sanitizeProvider(settings?.chat?.provider);
+}
+
+function effectiveJudgeModel(settings = providerSettings) {
+  const provider = effectiveJudgeProvider(settings);
+  const sourceModel = settings?.judge?.separate ? settings?.judge?.model : settings?.chat?.model;
+  return sanitizeModelValue(sourceModel, provider);
+}
+
+async function postJson(url, body, options = {}) {
+  const activeProvider = sanitizeProvider(options?.provider ?? providerSettings?.chat?.provider);
+  const activeKey = sanitizeKeyValue(options?.apiKey ?? providerSettings?.keys?.[activeProvider]);
+  const activeModel = sanitizeModelValue(options?.model ?? providerSettings?.chat?.model, activeProvider);
   const controller = new AbortController();
   activeRequestControllers.add(controller);
   try {
@@ -251,13 +318,26 @@ async function postJson(url, body) {
       body: JSON.stringify({
         ...body,
         provider: activeProvider,
-        apiKey: activeKey
+        apiKey: activeKey,
+        model: activeModel,
+        enableThinking: options?.enableThinking ?? body?.enableThinking ?? false
       })
     });
 
-    const data = await resp.json();
+    const rawText = await resp.text();
+    const contentType = String(resp.headers.get("content-type") || "").toLowerCase();
+    let data;
+    try {
+      data = rawText ? JSON.parse(rawText) : {};
+    } catch {
+      const snippet = rawText.trim().replace(/\s+/g, " ").slice(0, 140) || "Non-JSON response body";
+      throw new Error(`${resp.status} ${resp.statusText || "Request failed"}: ${snippet}`);
+    }
     if (!resp.ok) {
       throw new Error(data.error || "Request failed");
+    }
+    if (!contentType.includes("application/json")) {
+      throw new Error(`Expected JSON response but received ${contentType || "unknown content type"}`);
     }
     return data;
   } finally {
@@ -358,10 +438,23 @@ function saveCsvInput(raw) {
 
 function freshProviderSettings() {
   return {
-    provider: "openai",
     keys: {
       openai: "",
       gemini: ""
+    },
+    chat: {
+      provider: "openai",
+      model: DEFAULT_PROVIDER_MODELS.openai,
+      cooperativeTemperature: DEFAULT_RUNTIME_SETTINGS.cooperativeTemperature,
+      competitiveTemperature: DEFAULT_RUNTIME_SETTINGS.competitiveTemperature,
+      conclusionTemperature: DEFAULT_RUNTIME_SETTINGS.conclusionTemperature
+    },
+    judge: {
+      separate: DEFAULT_RUNTIME_SETTINGS.separateJudgeModel,
+      provider: "openai",
+      model: DEFAULT_PROVIDER_MODELS.openai,
+      temperature: DEFAULT_RUNTIME_SETTINGS.judgeTemperature,
+      geminiThinking: DEFAULT_RUNTIME_SETTINGS.judgeGeminiThinking
     }
   };
 }
@@ -374,15 +467,64 @@ function sanitizeKeyValue(value) {
   return String(value || "").trim();
 }
 
+function normalizeModelOption(option, provider) {
+  const id = sanitizeModelValue(option?.id ?? option, provider);
+  const label = String(option?.label || id).trim() || id;
+  return { id, label };
+}
+
+function dedupeModelOptions(options = [], provider = "openai") {
+  const seen = new Set();
+  return options
+    .map(option => normalizeModelOption(option, provider))
+    .filter(option => {
+      if (!option.id || seen.has(option.id)) return false;
+      seen.add(option.id);
+      return true;
+    })
+    .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true, sensitivity: "base" }));
+}
+
 function loadProviderSettings() {
   try {
     const raw = localStorage.getItem(PROVIDER_SETTINGS_STORAGE_KEY);
     if (!raw) return freshProviderSettings();
     const parsed = JSON.parse(raw);
     const next = freshProviderSettings();
-    next.provider = sanitizeProvider(parsed?.provider);
     next.keys.openai = sanitizeKeyValue(parsed?.keys?.openai);
     next.keys.gemini = sanitizeKeyValue(parsed?.keys?.gemini);
+
+    // Backward compatibility with the older single-provider settings shape.
+    const legacyProvider = sanitizeProvider(parsed?.provider);
+    next.chat.provider = sanitizeProvider(parsed?.chat?.provider ?? legacyProvider);
+    next.chat.model = sanitizeModelValue(
+      parsed?.chat?.model ?? parsed?.models?.[next.chat.provider] ?? parsed?.models?.openai,
+      next.chat.provider
+    );
+    next.chat.cooperativeTemperature = sanitizeTemperatureValue(
+      parsed?.chat?.cooperativeTemperature,
+      DEFAULT_RUNTIME_SETTINGS.cooperativeTemperature
+    );
+    next.chat.competitiveTemperature = sanitizeTemperatureValue(
+      parsed?.chat?.competitiveTemperature,
+      DEFAULT_RUNTIME_SETTINGS.competitiveTemperature
+    );
+    next.chat.conclusionTemperature = sanitizeTemperatureValue(
+      parsed?.chat?.conclusionTemperature,
+      DEFAULT_RUNTIME_SETTINGS.conclusionTemperature
+    );
+
+    next.judge.separate = Boolean(parsed?.judge?.separate);
+    next.judge.provider = sanitizeProvider(parsed?.judge?.provider ?? next.chat.provider);
+    next.judge.model = sanitizeModelValue(
+      parsed?.judge?.model ?? parsed?.models?.[next.judge.provider] ?? next.chat.model,
+      next.judge.provider
+    );
+    next.judge.temperature = sanitizeTemperatureValue(
+      parsed?.judge?.temperature,
+      DEFAULT_RUNTIME_SETTINGS.judgeTemperature
+    );
+    next.judge.geminiThinking = Boolean(parsed?.judge?.geminiThinking);
     return next;
   } catch {
     return freshProviderSettings();
@@ -407,19 +549,219 @@ function setSettingsHint(text, isError = false) {
   els.settingsHint.classList.toggle("is-error", Boolean(isError));
 }
 
-function syncSettingsFormForProvider(provider = providerSettings.provider) {
-  if (!els.providerSelect || !els.apiKeyInput) return;
+function renderModelOptions(selectEl, provider = "openai", selectedModel) {
+  if (!selectEl) return;
   const normalizedProvider = sanitizeProvider(provider);
-  const savedKey = String(providerSettings?.keys?.[normalizedProvider] || "").trim();
-  els.providerSelect.value = normalizedProvider;
-  els.apiKeyInput.value = savedKey;
-  els.apiKeyInput.placeholder =
-    normalizedProvider === "gemini" ? "Enter Gemini API key" : "Enter OpenAI API key";
-  setSettingsHint(
-    savedKey
-      ? `${providerLabel(normalizedProvider)} key loaded from this browser.`
-      : `No saved ${providerLabel(normalizedProvider)} key. Leave blank to use the server environment variable.`
+  const currentModel = sanitizeModelValue(
+    selectedModel ?? defaultModelForProvider(normalizedProvider),
+    normalizedProvider
   );
+  const catalog = Array.isArray(providerModelCatalog[normalizedProvider]) ? providerModelCatalog[normalizedProvider] : [];
+  const options = dedupeModelOptions(
+    [
+      { id: currentModel, label: currentModel },
+      { id: defaultModelForProvider(normalizedProvider), label: defaultModelForProvider(normalizedProvider) },
+      ...catalog
+    ],
+    normalizedProvider
+  );
+
+  selectEl.innerHTML = "";
+  options.forEach(option => {
+    const node = document.createElement("option");
+    node.value = option.id;
+    node.textContent = option.label;
+    selectEl.appendChild(node);
+  });
+  selectEl.value = currentModel;
+}
+
+function setModelLoaderBusy(target, busy) {
+  modelLoadState[target] = Boolean(busy);
+  const loadBtn = target === "judge" ? els.judgeModelLoadBtn : els.chatModelLoadBtn;
+  if (loadBtn) {
+    loadBtn.disabled = isDiscussionRunning || modelLoadState[target];
+    loadBtn.textContent = modelLoadState[target] ? "Loading..." : "Load Models";
+  }
+  setControlsBusy(isDiscussionRunning);
+}
+
+async function loadModelsForProvider(target = "chat", provider = providerSettings.chat.provider) {
+  const normalizedProvider = sanitizeProvider(provider);
+  const selectEl = target === "judge" ? els.judgeModelSelect : els.chatModelSelect;
+  const requestedModel = sanitizeModelValue(selectEl?.value, normalizedProvider);
+  const apiKey =
+    normalizedProvider === "gemini"
+      ? sanitizeKeyValue(els.geminiKeyInput?.value || providerSettings?.keys?.gemini)
+      : sanitizeKeyValue(els.openaiKeyInput?.value || providerSettings?.keys?.openai);
+
+  setModelLoaderBusy(target, true);
+  setSettingsHint(`Loading ${providerLabel(normalizedProvider)} models for the ${target} role...`);
+  try {
+    const data = await postJson(
+      "/api/models",
+      {},
+      {
+        provider: normalizedProvider,
+        apiKey,
+        model: requestedModel
+      }
+    );
+    const models = Array.isArray(data?.models) ? data.models : [];
+    providerModelCatalog[normalizedProvider] = dedupeModelOptions(models, normalizedProvider);
+    const nextModel = sanitizeModelValue(
+      data?.selectedModel ?? requestedModel ?? data?.defaultModel,
+      normalizedProvider
+    );
+    const currentProvider =
+      target === "judge"
+        ? sanitizeProvider(els.judgeProviderSelect?.value)
+        : sanitizeProvider(els.chatProviderSelect?.value);
+    if (currentProvider === normalizedProvider) {
+      renderModelOptions(selectEl, normalizedProvider, nextModel);
+      setSettingsHint(
+        `Loaded ${providerModelCatalog[normalizedProvider].length} ${providerLabel(normalizedProvider)} models for the ${target} role. Current model: ${nextModel}.`
+      );
+    }
+  } catch (err) {
+    providerModelCatalog[normalizedProvider] = [];
+    const currentProvider =
+      target === "judge"
+        ? sanitizeProvider(els.judgeProviderSelect?.value)
+        : sanitizeProvider(els.chatProviderSelect?.value);
+    if (currentProvider === normalizedProvider) {
+      renderModelOptions(selectEl, normalizedProvider, requestedModel);
+      setSettingsHint(
+        `Could not load ${providerLabel(normalizedProvider)} models for the ${target} role. Using ${requestedModel}. ${err.message || ""}`.trim(),
+        true
+      );
+    }
+  } finally {
+    setModelLoaderBusy(target, false);
+  }
+}
+
+function syncJudgeSettingsVisibility() {
+  if (!els.judgeConfigGroup || !els.judgeThinkingRow || !els.judgeModeHint) return;
+  const separate = Boolean(els.separateJudgeToggle?.checked);
+  els.judgeConfigGroup.classList.toggle("is-hidden", !separate);
+  els.judgeConfigGroup.setAttribute("aria-hidden", separate ? "false" : "true");
+
+  const judgeProvider = separate
+    ? sanitizeProvider(els.judgeProviderSelect?.value)
+    : sanitizeProvider(els.chatProviderSelect?.value);
+  const judgeModel = separate
+    ? sanitizeModelValue(els.judgeModelSelect?.value, judgeProvider)
+    : sanitizeModelValue(els.chatModelSelect?.value, judgeProvider);
+
+  if (separate) {
+    els.judgeModeHint.textContent = `Judge uses ${providerLabel(judgeProvider)} on ${judgeModel}.`;
+  } else {
+    els.judgeModeHint.textContent = `Judge inherits ${providerLabel(judgeProvider)} on ${judgeModel} from the discussion.`;
+  }
+
+  const showThinkingToggle = judgeProvider === "gemini";
+  els.judgeThinkingRow.classList.toggle("is-hidden", !showThinkingToggle);
+  els.judgeThinkingRow.setAttribute("aria-hidden", showThinkingToggle ? "false" : "true");
+}
+
+function syncSettingsForm() {
+  if (!els.chatProviderSelect || !els.chatModelSelect || !els.judgeProviderSelect || !els.judgeModelSelect) return;
+
+  els.openaiKeyInput.value = sanitizeKeyValue(providerSettings?.keys?.openai);
+  els.geminiKeyInput.value = sanitizeKeyValue(providerSettings?.keys?.gemini);
+
+  els.chatProviderSelect.value = sanitizeProvider(providerSettings?.chat?.provider);
+  renderModelOptions(
+    els.chatModelSelect,
+    providerSettings.chat.provider,
+    sanitizeModelValue(providerSettings.chat.model, providerSettings.chat.provider)
+  );
+
+  els.coopTempInput.value = String(
+    sanitizeTemperatureValue(providerSettings?.chat?.cooperativeTemperature, DEFAULT_RUNTIME_SETTINGS.cooperativeTemperature)
+  );
+  els.compTempInput.value = String(
+    sanitizeTemperatureValue(providerSettings?.chat?.competitiveTemperature, DEFAULT_RUNTIME_SETTINGS.competitiveTemperature)
+  );
+  els.conclusionTempInput.value = String(
+    sanitizeTemperatureValue(providerSettings?.chat?.conclusionTemperature, DEFAULT_RUNTIME_SETTINGS.conclusionTemperature)
+  );
+
+  els.separateJudgeToggle.checked = Boolean(providerSettings?.judge?.separate);
+  els.judgeProviderSelect.value = sanitizeProvider(providerSettings?.judge?.provider);
+  renderModelOptions(
+    els.judgeModelSelect,
+    providerSettings.judge.provider,
+    sanitizeModelValue(providerSettings.judge.model, providerSettings.judge.provider)
+  );
+  els.judgeTempInput.value = String(
+    sanitizeTemperatureValue(providerSettings?.judge?.temperature, DEFAULT_RUNTIME_SETTINGS.judgeTemperature)
+  );
+  els.judgeGeminiThinkingToggle.checked = Boolean(providerSettings?.judge?.geminiThinking);
+
+  syncJudgeSettingsVisibility();
+
+  const judgeProvider = effectiveJudgeProvider(providerSettings);
+  const judgeModel = effectiveJudgeModel(providerSettings);
+  setSettingsHint(
+    `Discussion: ${providerLabel(providerSettings.chat.provider)} on ${providerSettings.chat.model}. Judge: ${providerLabel(judgeProvider)} on ${judgeModel}.`
+  );
+}
+
+function readSettingsFromForm() {
+  const chatProvider = sanitizeProvider(els.chatProviderSelect?.value);
+  const judgeProvider = sanitizeProvider(els.judgeProviderSelect?.value);
+  return {
+    keys: {
+      openai: sanitizeKeyValue(els.openaiKeyInput?.value),
+      gemini: sanitizeKeyValue(els.geminiKeyInput?.value)
+    },
+    chat: {
+      provider: chatProvider,
+      model: sanitizeModelValue(els.chatModelSelect?.value, chatProvider),
+      cooperativeTemperature: sanitizeTemperatureValue(
+        els.coopTempInput?.value,
+        DEFAULT_RUNTIME_SETTINGS.cooperativeTemperature
+      ),
+      competitiveTemperature: sanitizeTemperatureValue(
+        els.compTempInput?.value,
+        DEFAULT_RUNTIME_SETTINGS.competitiveTemperature
+      ),
+      conclusionTemperature: sanitizeTemperatureValue(
+        els.conclusionTempInput?.value,
+        DEFAULT_RUNTIME_SETTINGS.conclusionTemperature
+      )
+    },
+    judge: {
+      separate: Boolean(els.separateJudgeToggle?.checked),
+      provider: judgeProvider,
+      model: sanitizeModelValue(els.judgeModelSelect?.value, judgeProvider),
+      temperature: sanitizeTemperatureValue(
+        els.judgeTempInput?.value,
+        DEFAULT_RUNTIME_SETTINGS.judgeTemperature
+      ),
+      geminiThinking: Boolean(els.judgeGeminiThinkingToggle?.checked)
+    }
+  };
+}
+
+function getDiscussionRequestOptions() {
+  return {
+    provider: sanitizeProvider(providerSettings?.chat?.provider),
+    apiKey: sanitizeKeyValue(providerSettings?.keys?.[sanitizeProvider(providerSettings?.chat?.provider)]),
+    model: sanitizeModelValue(providerSettings?.chat?.model, providerSettings?.chat?.provider)
+  };
+}
+
+function getJudgeRequestOptions() {
+  const provider = effectiveJudgeProvider(providerSettings);
+  return {
+    provider,
+    apiKey: sanitizeKeyValue(providerSettings?.keys?.[provider]),
+    model: effectiveJudgeModel(providerSettings),
+    enableThinking: provider === "gemini" && Boolean(providerSettings?.judge?.geminiThinking)
+  };
 }
 
 function formatTimestamp(ts) {
@@ -547,11 +889,52 @@ function setControlsBusy(busy) {
   if (els.settingsSaveBtn) {
     els.settingsSaveBtn.disabled = isDiscussionRunning;
   }
-  if (els.providerSelect) {
-    els.providerSelect.disabled = isDiscussionRunning;
+  if (els.openaiKeyInput) {
+    els.openaiKeyInput.disabled = isDiscussionRunning;
   }
-  if (els.apiKeyInput) {
-    els.apiKeyInput.disabled = isDiscussionRunning;
+  if (els.geminiKeyInput) {
+    els.geminiKeyInput.disabled = isDiscussionRunning;
+  }
+  if (els.chatProviderSelect) {
+    els.chatProviderSelect.disabled = isDiscussionRunning;
+  }
+  if (els.chatModelSelect) {
+    els.chatModelSelect.disabled = isDiscussionRunning || modelLoadState.chat;
+  }
+  if (els.chatModelLoadBtn) {
+    els.chatModelLoadBtn.disabled = isDiscussionRunning || modelLoadState.chat;
+  }
+  if (els.coopTempInput) {
+    els.coopTempInput.disabled = isDiscussionRunning;
+  }
+  if (els.compTempInput) {
+    els.compTempInput.disabled = isDiscussionRunning;
+  }
+  if (els.conclusionTempInput) {
+    els.conclusionTempInput.disabled = isDiscussionRunning;
+  }
+  if (els.separateJudgeToggle) {
+    els.separateJudgeToggle.disabled = isDiscussionRunning;
+  }
+  if (els.judgeProviderSelect) {
+    els.judgeProviderSelect.disabled = isDiscussionRunning || !els.separateJudgeToggle?.checked;
+  }
+  if (els.judgeModelSelect) {
+    els.judgeModelSelect.disabled =
+      isDiscussionRunning || modelLoadState.judge || !els.separateJudgeToggle?.checked;
+  }
+  if (els.judgeModelLoadBtn) {
+    els.judgeModelLoadBtn.disabled =
+      isDiscussionRunning || modelLoadState.judge || !els.separateJudgeToggle?.checked;
+  }
+  if (els.judgeTempInput) {
+    els.judgeTempInput.disabled = isDiscussionRunning;
+  }
+  if (els.judgeGeminiThinkingToggle) {
+    const judgeProvider = els.separateJudgeToggle?.checked
+      ? sanitizeProvider(els.judgeProviderSelect?.value)
+      : sanitizeProvider(els.chatProviderSelect?.value);
+    els.judgeGeminiThinkingToggle.disabled = isDiscussionRunning || judgeProvider !== "gemini";
   }
   if (els.csvToggle) {
     els.csvToggle.disabled = isDiscussionRunning;
@@ -597,7 +980,13 @@ function setSettingsPanelOpen(open) {
     setCsvPanelOpen(false);
   }
   if (isSettingsPanelOpen) {
-    syncSettingsFormForProvider(providerSettings.provider);
+    syncSettingsForm();
+    void Promise.all([
+      loadModelsForProvider("chat", providerSettings.chat.provider),
+      providerSettings.judge.separate
+        ? loadModelsForProvider("judge", providerSettings.judge.provider)
+        : Promise.resolve()
+    ]);
   }
   els.settingsPanel.classList.toggle("is-collapsed", !isSettingsPanelOpen);
   els.settingsPanel.setAttribute("aria-hidden", isSettingsPanelOpen ? "false" : "true");
@@ -610,8 +999,8 @@ function setSettingsPanelOpen(open) {
   els.settingsToggle.setAttribute("aria-label", label);
   els.settingsToggle.setAttribute("title", label);
   els.settingsToggle.classList.toggle("is-active", isSettingsPanelOpen);
-  if (isSettingsPanelOpen && els.providerSelect) {
-    requestAnimationFrame(() => els.providerSelect.focus());
+  if (isSettingsPanelOpen && els.chatProviderSelect) {
+    requestAnimationFrame(() => els.chatProviderSelect.focus());
   }
 }
 
@@ -663,21 +1052,14 @@ function stopDiscussion() {
 }
 
 function saveSettingsFromPanel() {
-  const provider = sanitizeProvider(els.providerSelect?.value);
-  const key = sanitizeKeyValue(els.apiKeyInput?.value);
-  providerSettings = {
-    provider,
-    keys: {
-      openai: sanitizeKeyValue(providerSettings?.keys?.openai),
-      gemini: sanitizeKeyValue(providerSettings?.keys?.gemini),
-      [provider]: key
-    }
-  };
+  providerSettings = readSettingsFromForm();
   saveProviderSettings();
-  syncSettingsFormForProvider(provider);
+  syncSettingsForm();
   setSettingsPanelOpen(false);
+  const judgeProvider = effectiveJudgeProvider(providerSettings);
+  const judgeModel = effectiveJudgeModel(providerSettings);
   setStatus(
-    `Provider set to ${providerLabel(provider)}${key ? " with a browser-saved key." : " using the server environment key if available."}`
+    `Discussion set to ${providerLabel(providerSettings.chat.provider)} on ${providerSettings.chat.model}. Judge set to ${providerLabel(judgeProvider)} on ${judgeModel}.`
   );
 }
 
@@ -870,7 +1252,6 @@ async function runOneMode({ mode, topic, deadline, logEl, conclusionEl, agentCar
   const transcript = [];
   const agentState = createAgentState(agentCards);
   let alertSent = false;
-  let turnsAfterAlert = 0;
   let lastSpeakerId = null;
   let turn = 0;
 
@@ -895,20 +1276,29 @@ async function runOneMode({ mode, topic, deadline, logEl, conclusionEl, agentCar
     const typingNode = appendTyping(logEl, agentLabel(agentCard));
 
     try {
-      const data = await postJson("/api/agent-turn", {
-        topic,
-        mode,
-        agent: agentCard.name,
-        agentRole: agentCard.lens,
-        agentMission: agentCard.mission,
-        agentStyle: agentCard.style,
-        agentPersonality: agentCard.personality,
-        agentPhrases: agentCard.signaturePhrases,
-        teamRoster,
-        transcript,
-        wrapUp: alertSent,
-        turnIndex: turn
-      });
+      const discussionOptions = getDiscussionRequestOptions();
+      const data = await postJson(
+        "/api/agent-turn",
+        {
+          topic,
+          mode,
+          agent: agentCard.name,
+          agentRole: agentCard.lens,
+          agentMission: agentCard.mission,
+          agentStyle: agentCard.style,
+          agentPersonality: agentCard.personality,
+          agentPhrases: agentCard.signaturePhrases,
+          teamRoster,
+          transcript,
+          wrapUp: alertSent,
+          turnIndex: turn,
+          temperature:
+            mode === "competitive"
+              ? providerSettings.chat.competitiveTemperature
+              : providerSettings.chat.cooperativeTemperature
+        },
+        discussionOptions
+      );
       if (stopRequested) {
         typingNode.remove();
         break;
@@ -936,11 +1326,6 @@ async function runOneMode({ mode, topic, deadline, logEl, conclusionEl, agentCar
     }
 
     turn += 1;
-
-    if (alertSent) {
-      turnsAfterAlert += 1;
-      if (turnsAfterAlert >= agentCards.length) break;
-    }
   }
 
   if (stopRequested) {
@@ -949,7 +1334,16 @@ async function runOneMode({ mode, topic, deadline, logEl, conclusionEl, agentCar
   }
 
   try {
-    const out = await postJson("/api/conclusion", { topic, mode, transcript });
+    const out = await postJson(
+      "/api/conclusion",
+      {
+        topic,
+        mode,
+        transcript,
+        temperature: providerSettings.chat.conclusionTemperature
+      },
+      getDiscussionRequestOptions()
+    );
     if (stopRequested) {
       conclusionEl.textContent = "Discussion stopped before final conclusion.";
       return { transcript, conclusion: conclusionEl.textContent, stopped: true };
@@ -1025,13 +1419,18 @@ async function runRound({ topic, historyTopic = topic, statusPrefix = "", openJu
     if (hasUsableConclusion(cooperativeConclusion) && hasUsableConclusion(competitiveConclusion)) {
       setStatus(`${prefix}Scoring final conclusions...`);
       try {
-        const judge = await postJson("/api/judge", {
-          topic,
-          cooperativeConclusion,
-          competitiveConclusion,
-          cooperativeTranscript,
-          competitiveTranscript
-        });
+        const judge = await postJson(
+          "/api/judge",
+          {
+            topic,
+            cooperativeConclusion,
+            competitiveConclusion,
+            cooperativeTranscript,
+            competitiveTranscript,
+            temperature: providerSettings.judge.temperature
+          },
+          getJudgeRequestOptions()
+        );
         if (stopRequested) {
           setJudgePending("Scoring skipped because the discussion was stopped.");
           setStatus(`${prefix}Stopped. Discussion ended before scoring.`);
@@ -1159,10 +1558,59 @@ if (els.settingsCloseBtn) {
 if (els.settingsSaveBtn) {
   els.settingsSaveBtn.addEventListener("click", saveSettingsFromPanel);
 }
-if (els.providerSelect) {
-  els.providerSelect.addEventListener("change", event => {
-    syncSettingsFormForProvider(event.target.value);
+if (els.chatProviderSelect) {
+  els.chatProviderSelect.addEventListener("change", event => {
+    const provider = sanitizeProvider(event.target.value);
+    renderModelOptions(els.chatModelSelect, provider, defaultModelForProvider(provider));
+    syncJudgeSettingsVisibility();
+    void loadModelsForProvider("chat", provider);
   });
+}
+if (els.judgeProviderSelect) {
+  els.judgeProviderSelect.addEventListener("change", event => {
+    const provider = sanitizeProvider(event.target.value);
+    renderModelOptions(els.judgeModelSelect, provider, defaultModelForProvider(provider));
+    syncJudgeSettingsVisibility();
+    void loadModelsForProvider("judge", provider);
+  });
+}
+if (els.chatModelSelect) {
+  els.chatModelSelect.addEventListener("change", syncJudgeSettingsVisibility);
+}
+if (els.judgeModelSelect) {
+  els.judgeModelSelect.addEventListener("change", syncJudgeSettingsVisibility);
+}
+if (els.separateJudgeToggle) {
+  els.separateJudgeToggle.addEventListener("change", () => {
+    syncJudgeSettingsVisibility();
+    setControlsBusy(isDiscussionRunning);
+    if (els.separateJudgeToggle.checked) {
+      void loadModelsForProvider("judge", sanitizeProvider(els.judgeProviderSelect?.value));
+    }
+  });
+}
+if (els.chatModelLoadBtn) {
+  els.chatModelLoadBtn.addEventListener("click", () => {
+    void loadModelsForProvider("chat", sanitizeProvider(els.chatProviderSelect?.value));
+  });
+}
+if (els.judgeModelLoadBtn) {
+  els.judgeModelLoadBtn.addEventListener("click", () => {
+    void loadModelsForProvider("judge", sanitizeProvider(els.judgeProviderSelect?.value));
+  });
+}
+if (els.openaiKeyInput) {
+  els.openaiKeyInput.addEventListener("input", () => {
+    setSettingsHint("OpenAI key edited. Click Load Models to refresh any OpenAI model selectors.");
+  });
+}
+if (els.geminiKeyInput) {
+  els.geminiKeyInput.addEventListener("input", () => {
+    setSettingsHint("Gemini key edited. Click Load Models to refresh any Gemini model selectors.");
+  });
+}
+if (els.judgeGeminiThinkingToggle) {
+  els.judgeGeminiThinkingToggle.addEventListener("change", syncJudgeSettingsVisibility);
 }
 if (els.judgeToggle) {
   els.judgeToggle.addEventListener("click", toggleJudgePanel);
@@ -1210,7 +1658,10 @@ els.timer.textContent = formatMs(MAX_MS);
 renderTally();
 renderHistory();
 setJudgePending("Scoring will appear after both final conclusions.");
-syncSettingsFormForProvider(providerSettings.provider);
+syncSettingsForm();
+setModelLoaderBusy("chat", false);
+setModelLoaderBusy("judge", false);
+setControlsBusy(false);
 setSettingsPanelOpen(false);
 setJudgePanelOpen(false);
 setCsvPanelOpen(false);

@@ -4,6 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CooCom Agentic Chat</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="shortcut icon" href="/favicon.svg" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -122,35 +124,143 @@
       <div class="settings-panel-top">
         <div class="settings-head">
           <h3>Provider Settings</h3>
-          <p class="settings-subtitle">Choose OpenAI or Gemini and store the key locally in this browser.</p>
+          <p class="settings-subtitle">Store provider keys locally, choose a discussion model, and optionally run the judge on a different LLM.</p>
         </div>
         <button id="settingsCloseBtn" class="judge-clear-btn" type="button">Close</button>
       </div>
 
       <div class="settings-form">
-        <label class="settings-field-label" for="providerSelect">Provider</label>
-        <select id="providerSelect" class="settings-select">
-          <option value="openai">OpenAI</option>
-          <option value="gemini">Gemini</option>
-        </select>
+        <section class="settings-section settings-section-wide">
+          <div class="settings-section-head">
+            <div>
+              <h4 class="settings-section-title">Provider Keys</h4>
+              <p class="settings-inline-help">Stored only in this browser unless you leave a key blank and fall back to server env vars.</p>
+            </div>
+          </div>
 
-        <label class="settings-field-label" for="apiKeyInput">API Key</label>
-        <input
-          id="apiKeyInput"
-          class="settings-key"
-          type="password"
-          autocomplete="off"
-          spellcheck="false"
-          placeholder="Enter API key for selected provider"
-        />
+          <div class="settings-field-grid settings-field-grid-2">
+            <div class="settings-field-group">
+              <label class="settings-field-label" for="openaiKeyInput">OpenAI API Key</label>
+              <input
+                id="openaiKeyInput"
+                class="settings-key"
+                type="password"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="Enter OpenAI API key"
+              />
+            </div>
 
-        <p class="settings-help">
-          Saved only in this browser. Leave the field blank to fall back to the matching server environment variable.
-        </p>
-        <p id="settingsHint" class="settings-hint">OpenAI is selected by default.</p>
+            <div class="settings-field-group">
+              <label class="settings-field-label" for="geminiKeyInput">Gemini API Key</label>
+              <input
+                id="geminiKeyInput"
+                class="settings-key"
+                type="password"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="Enter Gemini API key"
+              />
+            </div>
+          </div>
+        </section>
 
-        <div class="settings-actions">
-          <button id="settingsSaveBtn" class="settings-save-btn" type="button">Save Settings</button>
+        <div class="settings-grid">
+          <section class="settings-section">
+            <div class="settings-section-head">
+              <div>
+                <h4 class="settings-section-title">Discussion LLM</h4>
+                <p class="settings-inline-help">Controls live agent turns and final conclusions.</p>
+              </div>
+            </div>
+
+            <div class="settings-field-group">
+              <label class="settings-field-label" for="chatProviderSelect">Chat Provider</label>
+              <select id="chatProviderSelect" class="settings-select">
+                <option value="openai">OpenAI</option>
+                <option value="gemini">Gemini</option>
+              </select>
+            </div>
+
+            <div class="settings-field-group">
+              <label class="settings-field-label" for="chatModelSelect">Chat Model</label>
+              <div class="settings-model-row">
+                <select id="chatModelSelect" class="settings-select"></select>
+                <button id="chatModelLoadBtn" class="settings-load-btn" type="button">Load Models</button>
+              </div>
+            </div>
+
+            <div class="settings-temp-grid">
+              <div class="settings-field-group">
+                <label class="settings-field-label" for="coopTempInput">Coop Temp</label>
+                <input id="coopTempInput" class="settings-key" type="number" min="0" max="2" step="0.01" />
+              </div>
+              <div class="settings-field-group">
+                <label class="settings-field-label" for="compTempInput">Comp Temp</label>
+                <input id="compTempInput" class="settings-key" type="number" min="0" max="2" step="0.01" />
+              </div>
+              <div class="settings-field-group">
+                <label class="settings-field-label" for="conclusionTempInput">Conclusion Temp</label>
+                <input id="conclusionTempInput" class="settings-key" type="number" min="0" max="2" step="0.01" />
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <div class="settings-toggle-row">
+              <div>
+                <h4 class="settings-section-title">Judge LLM</h4>
+                <p id="judgeModeHint" class="settings-inline-help">Judge uses the same provider and model as the discussion.</p>
+              </div>
+              <label class="settings-switch">
+                <input id="separateJudgeToggle" type="checkbox" />
+                <span>Different judge LLM</span>
+              </label>
+            </div>
+
+            <div id="judgeConfigGroup" class="settings-judge-group is-hidden" aria-hidden="true">
+              <div class="settings-field-group">
+                <label class="settings-field-label" for="judgeProviderSelect">Judge Provider</label>
+                <select id="judgeProviderSelect" class="settings-select">
+                  <option value="openai">OpenAI</option>
+                  <option value="gemini">Gemini</option>
+                </select>
+              </div>
+
+              <div class="settings-field-group">
+                <label class="settings-field-label" for="judgeModelSelect">Judge Model</label>
+                <div class="settings-model-row">
+                  <select id="judgeModelSelect" class="settings-select"></select>
+                  <button id="judgeModelLoadBtn" class="settings-load-btn" type="button">Load Models</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-temp-grid settings-temp-grid-single">
+              <div class="settings-field-group">
+                <label class="settings-field-label" for="judgeTempInput">Judge Temp</label>
+                <input id="judgeTempInput" class="settings-key" type="number" min="0" max="2" step="0.01" />
+              </div>
+            </div>
+
+            <label id="judgeThinkingRow" class="settings-switch settings-switch-block">
+              <input id="judgeGeminiThinkingToggle" type="checkbox" />
+              <span>Enable Gemini judge thinking</span>
+            </label>
+          </section>
+        </div>
+
+        <div class="settings-footer">
+          <div class="settings-footer-copy">
+            <p class="settings-help">
+              Saved only in this browser. Leave a provider key blank to fall back to that provider's server environment variable.
+            </p>
+            <p id="settingsHint" class="settings-hint">OpenAI is selected by default.</p>
+          </div>
+
+          <div class="settings-actions">
+            <button id="settingsSaveBtn" class="settings-save-btn" type="button">Save Settings</button>
+          </div>
         </div>
       </div>
     </aside>
